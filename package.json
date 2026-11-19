@@ -1,0 +1,14 @@
+{
+  "name": "supremacy-like",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "npm run test -w @supremacy/sim",
+    "typecheck": "npm run typecheck -w @supremacy/sim",
+    "demo": "npm run demo -w @supremacy/sim",
+    "match": "npm run match -w @supremacy/sim"
+  }
+}

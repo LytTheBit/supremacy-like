@@ -1,0 +1,145 @@
+import type { Ruleset, Units } from './types';
+
+/**
+ * Simplified combat model (no randomness, no external calculator needed).
+ *
+ * Each round, for a side X attacked by a side Y:
+ *   damage(Y -> X) = attack(Y) * attack(Y) / (attack(Y) + defense(X)) * damageScale
+ * Damage is split evenly between all enemy sides, then converted to a
+ * survival factor: survival = 1 - incomingDamage / totalHp(X).
+ * All units of a side lose the same share, so the army shrinks smoothly.
+ *
+ * Because attack appears both as the base and in the ratio, bigger armies
+ * gain a disproportionate advantage (Lanchester-like square law).
+ */
+
+export interface SideStats {
+  attack: number;
+  defense: number;
+  hp: number;
+}
+
+export function totalCount(units: Units): number {
+  return Object.values(units).reduce((sum, n) => sum + n, 0);
+}
+
+export function sideStats(rules: Ruleset, units: Units): SideStats {
+  const stats: SideStats = { attack: 0, defense: 0, hp: 0 };
+  for (const [type, count] of Object.entries(units)) {
+    const def = rules.units[type];
+    if (!def) throw new Error(`Unknown unit type: ${type}`);
+    stats.attack += def.attack * count;
+    stats.defense += def.defense * count;
+    stats.hp += def.hp * count;
+  }
+  return stats;
+}
+
+/** Multiplies all counts by a factor. A factor <= 0 wipes the army out. */
+export function scaleUnits(units: Units, factor: number): Units {
+  if (factor <= 0) return {};
+  const scaled: Units = {};
+  for (const [type, count] of Object.entries(units)) {
+    scaled[type] = count * factor;
+  }
+  return scaled;
+}
+
+/** Sums several unit sets into one. */
+export function sumUnits(list: Units[]): Units {
+  const total: Units = {};
+  for (const units of list) {
+    for (const [type, count] of Object.entries(units)) {
+      total[type] = (total[type] ?? 0) + count;
+    }
+  }
+  return total;
+}
+
+/**
+ * Resolves one combat round between two or more sides.
+ * Returns the survival factor (0..1) of each side, in the same order.
+ * All damage is computed from the state at the start of the round (simultaneous).
+ */
+export function resolveRound(rules: Ruleset, sides: Units[]): number[] {
+  const stats = sides.map((units) => sideStats(rules, units));
+  const enemies = stats.length - 1;
+
+  return stats.map((target, i) => {
+    if (target.hp <= 0 || enemies <= 0) return target.hp <= 0 ? 0 : 1;
+
+    let incoming = 0;
+    stats.forEach((attacker, j) => {
+      if (i === j || attacker.attack <= 0) return;
+      const damage =
+        ((attacker.attack * attacker.attack) / (attacker.attack + target.defense)) *
+        rules.combat.damageScale;
+      incoming += damage / enemies;
+    });
+
+    const survival = Math.max(0, 1 - incoming / target.hp);
+    const unitsLeft = totalCount(sides[i] ?? {}) * survival;
+    return unitsLeft < rules.combat.minUnitsAlive ? 0 : survival;
+  });
+}
+
+export interface BattlePreview {
+  winner: 'attacker' | 'defender' | 'draw' | 'stalemate';
+  rounds: number;
+  attackerLeft: Units;
+  defenderLeft: Units;
+  /** Fraction (0..1) of the original hit points still alive. */
+  attackerHpLeft: number;
+  defenderHpLeft: number;
+}
+
+/**
+ * Plays a full battle between two unit sets and reports the outcome.
+ * This is the "built-in calculator" the UI can show before confirming an attack.
+ * Note: the model is symmetric, so "attacker" and "defender" are only labels
+ * (terrain, morale and generals will add modifiers later).
+ */
+export function previewBattle(
+  rules: Ruleset,
+  attacker: Units,
+  defender: Units,
+  maxRounds = 1000,
+): BattlePreview {
+  const attackerHp = sideStats(rules, attacker).hp;
+  const defenderHp = sideStats(rules, defender).hp;
+
+  let a = attacker;
+  let d = defender;
+  let rounds = 0;
+  let stalemate = false;
+
+  while (rounds < maxRounds && totalCount(a) > 0 && totalCount(d) > 0) {
+    const { attack: attackA } = sideStats(rules, a);
+    const { attack: attackD } = sideStats(rules, d);
+    if (attackA <= 0 && attackD <= 0) {
+      stalemate = true;
+      break;
+    }
+    const [factorA = 0, factorD = 0] = resolveRound(rules, [a, d]);
+    a = scaleUnits(a, factorA);
+    d = scaleUnits(d, factorD);
+    rounds += 1;
+  }
+
+  const aAlive = totalCount(a) > 0;
+  const dAlive = totalCount(d) > 0;
+  let winner: BattlePreview['winner'];
+  if (stalemate || (aAlive && dAlive)) winner = 'stalemate';
+  else if (aAlive) winner = 'attacker';
+  else if (dAlive) winner = 'defender';
+  else winner = 'draw';
+
+  return {
+    winner,
+    rounds,
+    attackerLeft: a,
+    defenderLeft: d,
+    attackerHpLeft: attackerHp > 0 ? sideStats(rules, a).hp / attackerHp : 0,
+    defenderHpLeft: defenderHp > 0 ? sideStats(rules, d).hp / defenderHp : 0,
+  };
+}
