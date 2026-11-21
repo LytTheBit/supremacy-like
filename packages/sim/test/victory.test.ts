@@ -21,7 +21,7 @@ describe('victory by domination', () => {
     );
     state = tick(state, rules);
 
-    expect(state.outcome).toEqual({ winner: 'red', reason: 'domination' });
+    expect(state.outcome).toEqual({ winner: 'red', winners: ['red'], reason: 'domination' });
     expect(state.events.some((e) => e.type === 'game_over')).toBe(true);
   });
 
@@ -44,7 +44,7 @@ describe('victory by domination', () => {
 
     // Midfield is neutral: conquering it gives red 3 of 5 provinces.
     for (let i = 0; i < 4 && !state.outcome; i++) state = tick(state, rules);
-    expect(state.outcome).toEqual({ winner: 'red', reason: 'domination' });
+    expect(state.outcome).toEqual({ winner: 'red', winners: ['red'], reason: 'domination' });
   });
 });
 
@@ -57,7 +57,7 @@ describe('elimination and last standing', () => {
 
     expect(state.eliminated).toEqual(['blue']);
     expect(state.events.some((e) => e.type === 'player_eliminated' && e.playerId === 'blue')).toBe(true);
-    expect(state.outcome).toEqual({ winner: 'red', reason: 'last_standing' });
+    expect(state.outcome).toEqual({ winner: 'red', winners: ['red'], reason: 'last_standing' });
   });
 
   it('keeps a player alive while they still have an army or a batch in training', () => {
@@ -72,7 +72,7 @@ describe('elimination and last standing', () => {
     let withBatch = game({ redhaven: 'red', bluehaven: 'blue' });
     const player = withBatch.players.find((p) => p.id === 'red');
     if (!player) throw new Error('player not found');
-    player.stockpile = { wood: 0, iron: 5, grain: 5, coal: 0 };
+    player.stockpile = { wood: 0, iron: 5000, grain: 5000, coal: 0 };
     const recruit = orderRecruit(withBatch, rules, 'red', 'redhaven', 'infantry', 2);
     if (!recruit.ok) throw new Error('recruit failed');
     withBatch = recruit.state;
@@ -81,7 +81,7 @@ describe('elimination and last standing', () => {
 
   it('declares extinction when nobody is left', () => {
     const state = tick(game({}), rules);
-    expect(state.outcome).toEqual({ winner: null, reason: 'extinction' });
+    expect(state.outcome).toEqual({ winner: null, winners: [], reason: 'extinction' });
   });
 
   it('does not declare a last-standing winner in a one-player game', () => {

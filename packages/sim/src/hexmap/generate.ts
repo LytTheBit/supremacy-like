@@ -24,8 +24,10 @@ export interface GenerateOptions {
   minIslandCells?: number;
   /** Resources assigned to provinces. Default: wood, iron, grain, coal. */
   resources?: ResourceId[];
-  /** Highest production value of a province. Default 3. */
+  /** Highest production of a province, in `productionUnit`s. Default 3. */
   maxProduction?: number;
+  /** Size of one production step, matching the resource scale of the ruleset. Default 1000. */
+  productionUnit?: number;
   /** Link separate islands with sea routes so the map stays connected. Default true. */
   connectIslands?: boolean;
   /** Enclosed sea areas up to this size are filled in as land. Default 3. */
@@ -57,6 +59,7 @@ export function generateHexMap(options: GenerateOptions): HexMapData {
   const minIslandCells = Math.max(1, options.minIslandCells ?? 8);
   const resources = options.resources ?? ['wood', 'iron', 'grain', 'coal'];
   const maxProduction = Math.max(1, Math.floor(options.maxProduction ?? 3));
+  const productionUnit = options.productionUnit ?? 1000;
   const rng = mulberry32(seed);
 
   // --- Grid: rows of `width` hexes, offset so the shape stays a rectangle -------
@@ -179,7 +182,7 @@ export function generateHexMap(options: GenerateOptions): HexMapData {
       id,
       name: `Province ${s + 1}`,
       resource,
-      production: 1 + Math.floor(hash2(s, 17, seed) * maxProduction),
+      production: (1 + Math.floor(hash2(s, 17, seed) * maxProduction)) * productionUnit,
     };
   });
 

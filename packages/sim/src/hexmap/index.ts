@@ -4,5 +4,6 @@ export * from './types';
 export * from './graph';
 export * from './validate';
 export * from './borders';
+export * from './organic';
 export * from './svg';
 export * from './generate';

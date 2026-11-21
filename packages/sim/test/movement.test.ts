@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { armySpeed, baseRuleset, createGame, orderMove, tick, tinyMap, type GameState, type Units } from '../src';
+import {
+  armySpeed,
+  baseRuleset,
+  createGame,
+  orderMove,
+  orderStop,
+  tick,
+  tinyMap,
+  type GameState,
+  type Units,
+} from '../src';
 
 // Victory needs ALL provinces here, so conquests along the way never end the game
 // and these tests only measure movement.
@@ -96,5 +106,36 @@ describe('orders', () => {
       armies: [{ id: 'a1', owner: 'red', location: 'a', units: { infantry: 1 } }],
     });
     expect(orderMove(isolated, 'red', 'a1', 'b')).toEqual({ ok: false, error: 'no_path' });
+  });
+});
+
+describe('orderStop', () => {
+  it('cancels the order and keeps the army where it is', () => {
+    const ordered = orderMove(gameWithArmy({ infantry: 5 }), 'red', 'a1', 'bluehaven');
+    if (!ordered.ok) throw new Error('order failed');
+    const moving = run(ordered.state, 3);
+    expect(moving.armies[0]?.order).not.toBeNull();
+
+    const stopped = orderStop(moving, 'red', 'a1');
+    if (!stopped.ok) throw new Error('stop failed');
+    expect(stopped.state.armies[0]?.order).toBeNull();
+    expect(stopped.state.armies[0]?.location).toBe(moving.armies[0]?.location);
+
+    // It stays put from now on.
+    expect(locationOf(run(stopped.state, 5))).toBe(moving.armies[0]?.location);
+  });
+
+  it('validates the order and never mutates the input', () => {
+    const ordered = orderMove(gameWithArmy({ infantry: 5 }), 'red', 'a1', 'westmark');
+    if (!ordered.ok) throw new Error('order failed');
+    const snapshot = JSON.stringify(ordered.state);
+
+    expect(orderStop(ordered.state, 'blue', 'a1')).toEqual({ ok: false, error: 'not_owner' });
+    expect(orderStop(ordered.state, 'red', 'nope')).toEqual({ ok: false, error: 'army_not_found' });
+    expect(orderStop(ordered.state, 'red', 'a1').ok).toBe(true);
+    expect(JSON.stringify(ordered.state)).toBe(snapshot);
+
+    const over = { ...ordered.state, outcome: { winner: 'red', winners: ['red'], reason: 'domination' as const } };
+    expect(orderStop(over, 'red', 'a1')).toEqual({ ok: false, error: 'game_over' });
   });
 });

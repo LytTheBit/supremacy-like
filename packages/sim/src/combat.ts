@@ -23,6 +23,28 @@ export function totalCount(units: Units): number {
   return Object.values(units).reduce((sum, n) => sum + n, 0);
 }
 
+/**
+ * Attack and defense bonus (0.2 = +20%) that the commanders of an army give to its troops.
+ * Each commander type contributes `bonus * count`, capped by its own `maxBonus`.
+ * Commanders alone lead nobody, and `commanders.maxAffectedTroops` (if set) limits how
+ * many troops benefit: the bonus is then scaled by the share of troops it reaches.
+ */
+export function commanderBonus(rules: Ruleset, units: Units): number {
+  let bonus = 0;
+  let troops = 0;
+  for (const [type, count] of Object.entries(units)) {
+    const def = rules.units[type];
+    if (!def) throw new Error(`Unknown unit type: ${type}`);
+    if (def.commander) bonus += Math.min(def.commander.maxBonus, def.commander.bonus * count);
+    else troops += count;
+  }
+  if (bonus <= 0 || troops <= 0) return 0;
+
+  const limit = rules.commanders?.maxAffectedTroops;
+  const share = limit === undefined ? 1 : Math.min(1, limit / troops);
+  return bonus * share;
+}
+
 export function sideStats(rules: Ruleset, units: Units): SideStats {
   const stats: SideStats = { attack: 0, defense: 0, hp: 0 };
   for (const [type, count] of Object.entries(units)) {
@@ -32,6 +54,10 @@ export function sideStats(rules: Ruleset, units: Units): SideStats {
     stats.defense += def.defense * count;
     stats.hp += def.hp * count;
   }
+  // Commanders raise attack and defense, not hit points.
+  const multiplier = 1 + commanderBonus(rules, units);
+  stats.attack *= multiplier;
+  stats.defense *= multiplier;
   return stats;
 }
 
@@ -60,21 +86,30 @@ export function sumUnits(list: Units[]): Units {
  * Resolves one combat round between two or more sides.
  * Returns the survival factor (0..1) of each side, in the same order.
  * All damage is computed from the state at the start of the round (simultaneous).
+ *
+ * By default every side fights every other side. `hostile(i, j)` can say which pairs fight
+ * (allies stand side by side): a side's damage is split evenly between the sides it fights,
+ * and a side nobody fights comes out untouched.
  */
-export function resolveRound(rules: Ruleset, sides: Units[]): number[] {
+export function resolveRound(
+  rules: Ruleset,
+  sides: Units[],
+  hostile: (i: number, j: number) => boolean = () => true,
+): number[] {
   const stats = sides.map((units) => sideStats(rules, units));
-  const enemies = stats.length - 1;
+  const enemyCount = stats.map((_, i) => stats.filter((__, j) => j !== i && hostile(i, j)).length);
 
   return stats.map((target, i) => {
-    if (target.hp <= 0 || enemies <= 0) return target.hp <= 0 ? 0 : 1;
+    if (target.hp <= 0) return 0;
+    if ((enemyCount[i] ?? 0) <= 0) return 1;
 
     let incoming = 0;
     stats.forEach((attacker, j) => {
-      if (i === j || attacker.attack <= 0) return;
+      if (i === j || attacker.attack <= 0 || !hostile(j, i)) return;
       const damage =
         ((attacker.attack * attacker.attack) / (attacker.attack + target.defense)) *
         rules.combat.damageScale;
-      incoming += damage / enemies;
+      incoming += damage / (enemyCount[j] ?? 1);
     });
 
     const survival = Math.max(0, 1 - incoming / target.hp);

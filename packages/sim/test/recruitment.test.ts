@@ -34,8 +34,10 @@ function baseGame(): GameState {
     players,
     owners: { redhaven: 'red', bluehaven: 'blue' },
     armies: [],
+    // Artillery needs a factory.
+    buildings: [{ provinceId: 'redhaven', type: 'factory' }],
   });
-  return withStockpile(game, 'red', { grain: 20, iron: 10, coal: 10 });
+  return withStockpile(game, 'red', { grain: 20000, iron: 10000, coal: 10000 });
 }
 
 function run(state: GameState, ticks: number): GameState {
@@ -61,8 +63,8 @@ describe('orderRecruit', () => {
     const state = mustRecruit(baseGame(), 'red', 'redhaven', 'infantry', 4);
     const red = state.players.find((p) => p.id === 'red');
 
-    // infantry costs 2 grain + 1 iron each.
-    expect(red?.stockpile).toMatchObject({ grain: 12, iron: 6 });
+    // infantry costs 2000 grain + 1000 iron each.
+    expect(red?.stockpile).toMatchObject({ grain: 12000, iron: 6000 });
     expect(state.recruitQueue).toHaveLength(1);
     expect(state.recruitQueue[0]).toMatchObject({
       owner: 'red',
@@ -94,7 +96,7 @@ describe('orderRecruit', () => {
       owners: { redhaven: 'red' },
       armies: [{ id: 'blue-1', owner: 'blue', location: 'redhaven', units: { infantry: 1 } }],
     });
-    const state = withStockpile(game, 'red', { grain: 20, iron: 10 });
+    const state = withStockpile(game, 'red', { grain: 20000, iron: 10000 });
     expect(orderRecruit(state, rules, 'red', 'redhaven', 'infantry', 1)).toEqual({
       ok: false,
       error: 'enemy_present',
@@ -142,8 +144,9 @@ describe('training', () => {
       players,
       owners: { redhaven: 'red', bluehaven: 'blue' },
       armies: [{ id: 'garrison', owner: 'red', location: 'redhaven', units: { infantry: 5 } }],
+      buildings: [{ provinceId: 'redhaven', type: 'factory' }],
     });
-    const ordered = mustRecruit(withStockpile(game, 'red', { grain: 20, iron: 10, coal: 10 }), 'red', 'redhaven', 'artillery', 2);
+    const ordered = mustRecruit(withStockpile(game, 'red', { grain: 20000, iron: 10000, coal: 10000 }), 'red', 'redhaven', 'artillery', 2);
     const state = run(ordered, 4);
 
     expect(state.armies).toHaveLength(1);
@@ -158,7 +161,7 @@ describe('training', () => {
       owners: { redhaven: 'red', westmark: 'red', bluehaven: 'blue' },
       armies: [{ id: 'mover', owner: 'red', location: 'redhaven', units: { infantry: 5 } }],
     });
-    let state = withStockpile(game, 'red', { grain: 20, iron: 10 });
+    let state = withStockpile(game, 'red', { grain: 20000, iron: 10000 });
     const move = orderMove(state, 'red', 'mover', 'westmark');
     if (!move.ok) throw new Error('move failed');
     state = mustRecruit(move.state, 'red', 'redhaven', 'infantry', 2);
@@ -192,7 +195,7 @@ describe('training', () => {
       owners: { redhaven: 'red' },
       armies: [],
     });
-    let state = mustRecruit(withStockpile(game, 'red', { grain: 20, iron: 10 }), 'red', 'redhaven', 'infantry', 2);
+    let state = mustRecruit(withStockpile(game, 'red', { grain: 20000, iron: 10000 }), 'red', 'redhaven', 'infantry', 2);
 
     // Blue takes the province while the batch is still in training.
     const taken = structuredClone(state);
@@ -217,7 +220,7 @@ describe('economy to army loop', () => {
       armies: [],
     });
 
-    // redhaven makes 3 grain/tick, westmark 2 iron/tick: 2 ticks give 6 grain + 4 iron.
+    // redhaven makes 3000 grain/tick, westmark 2000 iron/tick: 2 ticks give 6000 grain + 4000 iron.
     let state = run(game, 2);
     state = mustRecruit(state, 'red', 'redhaven', 'infantry', 3);
     state = run(state, 2);

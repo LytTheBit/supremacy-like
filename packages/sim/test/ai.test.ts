@@ -15,8 +15,8 @@ const owners = {
 
 type ArmySetup = { id: string; owner: string; location: string; units: Units };
 
-function duelGame(armies: ArmySetup[]): GameState {
-  return createGame({ map: duelMap, rules, players, owners, armies });
+function duelGame(armies: ArmySetup[], buildings: { provinceId: string; type: string }[] = []): GameState {
+  return createGame({ map: duelMap, rules, players, owners, armies, buildings });
 }
 
 function withStockpile(state: GameState, playerId: string, stock: Record<string, number>): GameState {
@@ -32,7 +32,7 @@ const blueGuard: ArmySetup = { id: 'b-guard', owner: 'blue', location: 'bcap', u
 
 describe('AI recruiting', () => {
   it('spends its resources on infantry in an owned province near the front', () => {
-    const state = withStockpile(duelGame([blueGuard]), 'red', { grain: 40, iron: 4 });
+    const state = withStockpile(duelGame([blueGuard]), 'red', { grain: 40000, iron: 4000 });
     const next = runAi(state, rules, 'red');
 
     expect(next.recruitQueue).toHaveLength(1);
@@ -41,17 +41,22 @@ describe('AI recruiting', () => {
     expect(next.provinces.find((p) => p.id === job?.provinceId)?.owner).toBe('red');
 
     const red = next.players.find((p) => p.id === 'red');
-    expect(red?.stockpile).toMatchObject({ grain: 32, iron: 0 });
+    expect(red?.stockpile).toMatchObject({ grain: 32000, iron: 0 });
   });
 
   it('caps batch sizes', () => {
-    const state = withStockpile(duelGame([blueGuard]), 'red', { grain: 500, iron: 500, coal: 0 });
+    const state = withStockpile(duelGame([blueGuard]), 'red', { grain: 500000, iron: 500000, coal: 0 });
     const next = runAi(state, rules, 'red');
     expect(next.recruitQueue[0]?.count).toBe(10);
   });
 
   it('adds artillery when it can afford it', () => {
-    const state = withStockpile(duelGame([blueGuard]), 'red', { grain: 40, iron: 40, coal: 40 });
+    // Artillery can only be trained where a factory stands.
+    const state = withStockpile(duelGame([blueGuard], [{ provinceId: 'rcap', type: 'factory' }]), 'red', {
+      grain: 40000,
+      iron: 40000,
+      coal: 40000,
+    });
     const types = runAi(state, rules, 'red').recruitQueue.map((j) => j.unitType);
     expect(types).toEqual(['artillery', 'infantry']);
   });
@@ -118,7 +123,7 @@ describe('AI movement', () => {
     const eliminated = { ...state, eliminated: ['red'] };
     expect(runAi(eliminated, rules, 'red')).toBe(eliminated);
 
-    const over = { ...state, outcome: { winner: 'blue', reason: 'last_standing' as const } };
+    const over = { ...state, outcome: { winner: 'blue', winners: ['blue'], reason: 'last_standing' as const } };
     expect(runAi(over, rules, 'red')).toBe(over);
   });
 });
@@ -149,10 +154,16 @@ describe('AI matches', () => {
 
   it('leaves non-AI players alone', () => {
     // Give blue resources: if the AI played for blue, it would recruit.
-    const rich = withStockpile(start(12, 6), 'blue', { grain: 50, iron: 50, coal: 50 });
-    const final = runMatch(rich, rules, { aiPlayers: ['red'], maxTicks: 10 });
-    expect(final.recruitQueue.every((j) => j.owner === 'red')).toBe(true);
-    expect(final.recruitQueue.length).toBeGreaterThan(0);
+    const rich = withStockpile(start(12, 6), 'blue', { grain: 50000, iron: 50000, coal: 50000 });
+    const owners = new Set<string>();
+    runMatch(rich, rules, {
+      aiPlayers: ['red'],
+      maxTicks: 10,
+      // Look at every tick: a batch can be finished by the last one.
+      onTick: (state) => state.recruitQueue.forEach((job) => owners.add(job.owner)),
+    });
+    expect(owners.has('red')).toBe(true);
+    expect(owners.has('blue')).toBe(false);
   });
 
   it('calls onTick once per tick', () => {

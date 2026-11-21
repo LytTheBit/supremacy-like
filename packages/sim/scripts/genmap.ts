@@ -7,7 +7,9 @@ import {
   validateHexMap,
 } from '../src';
 
-// Usage: npm run genmap -- --seed 7 --provinces 24 --width 48 --height 32 --land 0.6 --roughness 1.2
+// Usage: npm run genmap -- --seed 7 --provinces 24 --width 48 --height 32 --land 0.6 --roughness 1.2 --organic 0.6
+// --roughness changes the map itself (which cells belong to which province).
+// --organic only changes how borders are DRAWN (0 = plain hexes, 1 = very irregular); the game data is the same.
 function arg(name: string, fallback: number): number {
   const index = process.argv.indexOf(`--${name}`);
   const raw = index >= 0 ? process.argv[index + 1] : undefined;
@@ -36,5 +38,7 @@ console.log(issues.length === 0 ? 'Validation: OK' : `Validation issues:\n${issu
 mkdirSync('out', { recursive: true });
 writeFileSync(`out/map-${seed}.json`, JSON.stringify(map));
 writeFileSync(`out/mapdef-${seed}.json`, JSON.stringify(mapDef, null, 2));
-writeFileSync(`out/map-${seed}.svg`, renderSvg(map, { showGraph: true }));
+const organic = arg('organic', 0.6);
+writeFileSync(`out/map-${seed}.svg`, renderSvg(map, { showGraph: true, organic, organicSeed: seed }));
+console.log(`Drawing: organic borders ${organic}${organic === 0 ? ' (plain hexes)' : ''}`);
 console.log(`Written out/map-${seed}.svg, out/map-${seed}.json, out/mapdef-${seed}.json`);

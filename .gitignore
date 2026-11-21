@@ -4,3 +4,5 @@ coverage/
 *.log
 .DS_Store
 out/
+packages/client/dist/
+packages/client/out/

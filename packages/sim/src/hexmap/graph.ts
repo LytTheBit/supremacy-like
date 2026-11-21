@@ -194,3 +194,35 @@ export function findBridgeLinks(map: HexMapData): HexLink[] {
     working.links.push(link);
   }
 }
+
+export interface HexMapBounds {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  width: number;
+  height: number;
+}
+
+/** Pixel rectangle that contains every hex of the map, plus an optional margin. */
+export function hexMapBounds(map: HexMapData, size = 1, margin = 0): HexMapBounds {
+  if (map.cells.length === 0) return { minX: 0, minY: 0, maxX: 0, maxY: 0, width: 0, height: 0 };
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const cell of map.cells) {
+    const center = hexToPixel(cell, size);
+    // A pointy-top hex is sqrt(3) * size wide and 2 * size tall.
+    minX = Math.min(minX, center.x - (SQRT3 * size) / 2);
+    maxX = Math.max(maxX, center.x + (SQRT3 * size) / 2);
+    minY = Math.min(minY, center.y - size);
+    maxY = Math.max(maxY, center.y + size);
+  }
+  minX -= margin;
+  minY -= margin;
+  maxX += margin;
+  maxY += margin;
+  return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
+}

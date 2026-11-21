@@ -151,8 +151,8 @@ describe('generateHexMap', () => {
     expect(Math.min(...counts.values())).toBeGreaterThanOrEqual(3);
     expect(new Set(map.provinces.map((p) => p.resource)).size).toBeGreaterThan(1);
     for (const p of map.provinces) {
-      expect(p.production).toBeGreaterThanOrEqual(1);
-      expect(p.production).toBeLessThanOrEqual(3);
+      expect(p.production).toBeGreaterThanOrEqual(1000);
+      expect(p.production).toBeLessThanOrEqual(3000);
     }
   });
 

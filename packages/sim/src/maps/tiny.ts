@@ -11,11 +11,11 @@ import type { MapDef } from '../types';
 export const tinyMap: MapDef = {
   id: 'tiny',
   provinces: [
-    { id: 'redhaven', name: 'Redhaven', resource: 'grain', production: 3 },
-    { id: 'westmark', name: 'Westmark', resource: 'iron', production: 2 },
-    { id: 'midfield', name: 'Midfield', resource: 'coal', production: 2 },
-    { id: 'eastmark', name: 'Eastmark', resource: 'wood', production: 2 },
-    { id: 'bluehaven', name: 'Bluehaven', resource: 'grain', production: 3 },
+    { id: 'redhaven', name: 'Redhaven', resource: 'grain', production: 3000 },
+    { id: 'westmark', name: 'Westmark', resource: 'iron', production: 2000 },
+    { id: 'midfield', name: 'Midfield', resource: 'coal', production: 2000 },
+    { id: 'eastmark', name: 'Eastmark', resource: 'wood', production: 2000 },
+    { id: 'bluehaven', name: 'Bluehaven', resource: 'grain', production: 3000 },
   ],
   edges: [
     { a: 'redhaven', b: 'westmark', distance: 2 },

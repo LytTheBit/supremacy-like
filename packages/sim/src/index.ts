@@ -1,8 +1,12 @@
 export * from './types';
 export * from './combat';
+export * from './buildings';
+export * from './morale';
 export * from './pathfinding';
 export * from './world';
+export * from './setup';
 export * from './orders';
+export * from './diplomacy';
 export * from './tick';
 export * from './victory';
 export * from './ai';
@@ -11,3 +15,4 @@ export { baseRuleset } from './rulesets/base';
 export { tinyMap } from './maps/tiny';
 export { duelMap } from './maps/duel';
 export * from './hexmap';
+export * from './medals';

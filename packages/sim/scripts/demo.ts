@@ -50,6 +50,10 @@ function describe(event: GameEvent): string {
       return `${event.count} ${event.unitType} trained at ${event.provinceId} -> ${event.armyId}`;
     case 'recruit_cancelled':
       return `recruit batch ${event.jobId} lost at ${event.provinceId}`;
+    case 'building_completed':
+      return `${event.buildingType} completed at ${event.provinceId}`;
+    case 'building_cancelled':
+      return `${event.buildingType} lost at ${event.provinceId}`;
     case 'player_eliminated':
       return `${event.playerId} eliminated`;
     case 'game_over':
@@ -60,6 +64,18 @@ function describe(event: GameEvent): string {
       return `${event.armyId} destroyed at ${event.provinceId}`;
     case 'province_conquered':
       return `${event.provinceId} conquered: ${event.from ?? 'neutral'} -> ${event.to}`;
+    case 'proposal_made':
+      return `${event.from} proposes a ${event.kind} to ${event.to}`;
+    case 'proposal_accepted':
+      return `${event.to} accepts the ${event.kind} with ${event.from}`;
+    case 'proposal_rejected':
+      return `${event.to} rejects the ${event.kind} offered by ${event.from}`;
+    case 'proposal_expired':
+      return `the ${event.kind} offered by ${event.from} to ${event.to} expired`;
+    case 'war_declared':
+      return `${event.from} declares war on ${event.to} (starts at tick ${event.warAt})`;
+    case 'relation_changed':
+      return `${event.a} and ${event.b}: ${event.status}`;
   }
 }
 

@@ -20,9 +20,9 @@ describe('economy', () => {
 
     const red = state.players.find((p) => p.id === 'red');
     const blue = state.players.find((p) => p.id === 'blue');
-    // redhaven: 3 grain/tick, westmark: 2 iron/tick, bluehaven: 3 grain/tick
-    expect(red?.stockpile).toEqual({ wood: 0, iron: 6, grain: 9, coal: 0 });
-    expect(blue?.stockpile).toEqual({ wood: 0, iron: 0, grain: 9, coal: 0 });
+    // redhaven: 3000 grain/tick, westmark: 2000 iron/tick, bluehaven: 3000 grain/tick
+    expect(red?.stockpile).toEqual({ wood: 0, iron: 6000, grain: 9000, coal: 0 });
+    expect(blue?.stockpile).toEqual({ wood: 0, iron: 0, grain: 9000, coal: 0 });
   });
 
   it('neutral provinces produce nothing', () => {

@@ -40,10 +40,22 @@ function describe(event: GameEvent): string | null {
       return `${event.armyId} destroyed at ${event.provinceId}`;
     case 'province_conquered':
       return `${event.provinceId}: ${event.from ?? 'neutral'} -> ${event.to}`;
+    case 'building_completed':
+      return `${event.buildingType} completed at ${event.provinceId}`;
+    case 'building_cancelled':
+      return `${event.buildingType} lost at ${event.provinceId}`;
     case 'player_eliminated':
       return `${event.playerId} eliminated`;
     case 'game_over':
-      return `GAME OVER: ${event.winner ?? 'nobody'} wins by ${event.reason}`;
+      return `GAME OVER: ${event.winners.join(' + ') || 'nobody'} wins by ${event.reason}`;
+    case 'proposal_made':
+    case 'proposal_accepted':
+    case 'proposal_rejected':
+    case 'proposal_expired':
+    case 'war_declared':
+      return null; // too noisy
+    case 'relation_changed':
+      return `${event.a} and ${event.b}: ${event.status}`;
   }
 }
 

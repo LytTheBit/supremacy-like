@@ -6,9 +6,11 @@
     "packages/*"
   ],
   "scripts": {
-    "test": "npm run test -w @supremacy/sim",
-    "typecheck": "npm run typecheck -w @supremacy/sim",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
     "demo": "npm run demo -w @supremacy/sim",
-    "match": "npm run match -w @supremacy/sim"
+    "match": "npm run match -w @supremacy/sim",
+    "client": "npm run dev -w @supremacy/client",
+    "build:client": "npm run build -w @supremacy/client"
   }
 }

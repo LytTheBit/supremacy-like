@@ -1,6 +1,7 @@
 import { adjacentProvincePairs, provinceAnchors } from './graph';
 import { extractBorders } from './borders';
 import { hexCorners, hexToPixel } from './hex';
+import { buildOrganicShapes } from './organic';
 import type { HexMapData } from './types';
 
 export interface SvgOptions {
@@ -10,6 +11,14 @@ export interface SvgOptions {
   showLabels?: boolean;
   /** Draw the province graph on top: adjacency as thin lines, manual links in red. Default false. */
   showGraph?: boolean;
+  /**
+   * Organic borders, 0..1. Visual only: borders become smooth irregular curves
+   * (no straight lines, no hexagon steps) and the game data is untouched.
+   * 0 draws the plain hexes. Default 0.
+   */
+  organic?: number;
+  /** Changes the pattern of the organic irregularities. Default 0. */
+  organicSeed?: number;
 }
 
 function escapeXml(text: string): string {
@@ -40,6 +49,7 @@ export function renderSvg(map: HexMapData, options: SvgOptions = {}): string {
   const size = options.size ?? 12;
   const showLabels = options.showLabels ?? true;
   const showGraph = options.showGraph ?? false;
+  const organic = Math.max(0, Math.min(1, options.organic ?? 0));
 
   const colors = new Map(map.provinces.map((p, i) => [p.id, provinceColor(i)]));
   let minX = Infinity;
@@ -58,18 +68,41 @@ export function renderSvg(map: HexMapData, options: SvgOptions = {}): string {
     }
     const fill = cell.kind === 'land' && cell.province ? (colors.get(cell.province) ?? '#bbb') : '#cfe3f0';
     const points = corners.map((c) => `${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(' ');
-    polygons.push(`<polygon points="${points}" fill="${fill}" stroke="${fill}" stroke-width="0.6"/>`);
+    if (organic === 0) {
+      polygons.push(`<polygon points="${points}" fill="${fill}" stroke="${fill}" stroke-width="0.6"/>`);
+    }
   }
   if (!Number.isFinite(minX)) return '<svg xmlns="http://www.w3.org/2000/svg" width="0" height="0"/>';
 
-  const margin = size;
+  // Organic curves wander a little outside the hex grid: leave more room around the map.
+  const margin = organic > 0 ? size * 1.6 : size;
   const lines: string[] = [];
-  for (const s of extractBorders(map, size)) {
-    const coast = s.b === null;
-    lines.push(
-      `<line x1="${s.x1.toFixed(1)}" y1="${s.y1.toFixed(1)}" x2="${s.x2.toFixed(1)}" y2="${s.y2.toFixed(1)}" ` +
-        `stroke="${coast ? '#3b4a54' : '#ffffff'}" stroke-width="${coast ? 1.6 : 2.2}" stroke-linecap="round"/>`,
-    );
+  if (organic > 0) {
+    const shapes = buildOrganicShapes(map, { strength: organic, seed: options.organicSeed ?? 0, size });
+    for (const province of map.provinces) {
+      const d = shapes.paths[province.id];
+      const color = colors.get(province.id) ?? '#bbb';
+      if (d) {
+        polygons.push(
+          `<path d="${d}" fill="${color}" fill-rule="evenodd" stroke="${color}" stroke-width="0.8" stroke-linejoin="round"/>`,
+        );
+      }
+    }
+    for (const border of shapes.borders) {
+      const coast = border.b === null;
+      lines.push(
+        `<path d="${border.path}" fill="none" stroke="${coast ? '#3b4a54' : '#ffffff'}" ` +
+          `stroke-width="${coast ? 1.6 : 2.2}" stroke-linecap="round" stroke-linejoin="round"/>`,
+      );
+    }
+  } else {
+    for (const s of extractBorders(map, size)) {
+      const coast = s.b === null;
+      lines.push(
+        `<line x1="${s.x1.toFixed(1)}" y1="${s.y1.toFixed(1)}" x2="${s.x2.toFixed(1)}" y2="${s.y2.toFixed(1)}" ` +
+          `stroke="${coast ? '#3b4a54' : '#ffffff'}" stroke-width="${coast ? 1.6 : 2.2}" stroke-linecap="round"/>`,
+      );
+    }
   }
 
   const anchors = provinceAnchors(map);
