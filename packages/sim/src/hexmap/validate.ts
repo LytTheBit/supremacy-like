@@ -8,6 +8,7 @@ export type HexMapIssueCode =
   | 'unknown_province'
   | 'land_without_province'
   | 'sea_with_province'
+  | 'land_with_sea_province'
   | 'empty_province'
   | 'disconnected_province'
   | 'bad_link'
@@ -24,9 +25,11 @@ export function validateHexMap(map: HexMapData): HexMapIssue[] {
   const add = (code: HexMapIssueCode, message: string) => issues.push({ code, message });
 
   const provinceIds = new Set<string>();
+  const seaProvinceIds = new Set<string>();
   for (const province of map.provinces) {
     if (provinceIds.has(province.id)) add('duplicate_province', `Duplicate province id: ${province.id}`);
     provinceIds.add(province.id);
+    if (province.terrain === 'sea') seaProvinceIds.add(province.id);
   }
 
   const seenCells = new Set<string>();
@@ -39,9 +42,16 @@ export function validateHexMap(map: HexMapData): HexMapIssue[] {
       if (cell.province === null) add('land_without_province', `Land cell ${key} has no province`);
       else if (!provinceIds.has(cell.province)) {
         add('unknown_province', `Cell ${key} references unknown province ${cell.province}`);
+      } else if (seaProvinceIds.has(cell.province)) {
+        add('land_with_sea_province', `Land cell ${key} belongs to sea province ${cell.province}`);
       }
     } else if (cell.province !== null) {
-      add('sea_with_province', `Sea cell ${key} belongs to province ${cell.province}`);
+      // Sea cells are open sea (no province) or part of a sea province.
+      if (!provinceIds.has(cell.province)) {
+        add('unknown_province', `Cell ${key} references unknown province ${cell.province}`);
+      } else if (!seaProvinceIds.has(cell.province)) {
+        add('sea_with_province', `Sea cell ${key} belongs to land province ${cell.province}`);
+      }
     }
   }
 

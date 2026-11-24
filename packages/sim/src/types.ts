@@ -15,6 +15,14 @@ export type UnitTypeId = string;
 export type BuildingId = string;
 export type MedalId = string;
 
+/** A province is either land (owned, produces resources) or sea (never owned, only crossed by ships). */
+export type Terrain = 'land' | 'sea';
+/**
+ * Where a unit operates. Land units walk on land; sea units sail and dock in ports; air units
+ * fly over everything but must stay within `range` of an airbase.
+ */
+export type UnitDomain = 'land' | 'sea' | 'air';
+
 /** Unit counts by type. Counts are fractional: casualties scale armies smoothly. */
 export type Units = Record<UnitTypeId, number>;
 
@@ -42,6 +50,33 @@ export interface UnitDef {
    * commanders of this type together never give more than `maxBonus`.
    */
   commander?: { bonus: number; maxBonus: number };
+  /** How far this unit sees (travel distance). Omit to use `rules.vision.unitRadius`. */
+  vision?: number;
+  /** Land (default), sea or air. Sea units can only be in sea provinces or docked in a port. */
+  domain?: UnitDomain;
+  /**
+   * Air units only: how far from the nearest airbase of their owner (or an ally), as travel
+   * distance, the unit can fly. An army is limited by its shortest-range unit.
+   */
+  range?: number;
+  /**
+   * Attack multiplier against targets of each domain (default 1). The multiplier of a unit
+   * applies in proportion to how many of the enemy's units belong to that domain, so
+   * bombers hurt ground troops and ships but fighters beat bombers.
+   */
+  vs?: Partial<Record<UnitDomain, number>>;
+  /**
+   * Sea units only: attack used to shell enemy armies on an adjacent coast. Optional: ships
+   * without it (submarines, transports) never bombard. Shelling is one-sided: the troops on
+   * land cannot fire back.
+   */
+  bombard?: number;
+  /**
+   * Sea units only: how many land units one of them carries. An army with land units in a sea
+   * province must have enough capacity for all of them. Cargo does not fight at sea, but it is
+   * lost together with the ships.
+   */
+  capacity?: number;
 }
 
 export interface BuildingDef {
@@ -54,6 +89,12 @@ export interface BuildingDef {
   productionMultiplier?: number;
   /** Multiplies the training time of units trained in the province. Default 1. */
   trainingTimeMultiplier?: number;
+  /** Can only be built in a land province that borders the sea. */
+  coastal?: boolean;
+  /** Ships can dock in a province that has this building (its owner's and allies' ships). */
+  harbor?: boolean;
+  /** Aircraft can be based here (its owner's and allies'); they measure their range from it. */
+  airbase?: boolean;
 }
 
 export interface CombatRules {
@@ -65,8 +106,9 @@ export interface CombatRules {
 
 export interface VictoryRules {
   /**
-   * Domination: a player wins by owning at least this share of ALL provinces
-   * (neutral ones included). Must be in (0.5, 1], so two players cannot both reach it.
+   * Domination: a player wins by owning at least this share of ALL land provinces
+   * (neutral ones included, sea provinces not counted). Must be in (0.5, 1], so two players
+   * cannot both reach it.
    */
   provinceShare: number;
 }
@@ -89,6 +131,15 @@ export interface CommanderRules {
   maxAffectedTroops?: number;
 }
 
+export interface VisionRules {
+  /** Fog of war: you only see armies, buildings and morale inside your vision. false = see everything. */
+  fog: boolean;
+  /** How far an owned province sees, as travel distance along the links between provinces. */
+  provinceRadius: number;
+  /** How far an army sees when none of its units says otherwise (UnitDef.vision). */
+  unitRadius: number;
+}
+
 export interface DiplomacyRules {
   /** How long a truce lasts, in ticks. When it ends the two players are at war again. */
   truceTicks: number;
@@ -96,6 +147,21 @@ export interface DiplomacyRules {
   warNoticeTicks: number;
   /** A proposal nobody answers is withdrawn after this many ticks. */
   proposalTicks: number;
+}
+
+export interface EspionageRules {
+  /** Resources paid to send one spy. */
+  cost: Record<ResourceId, number>;
+  /** Most spies a player can have at once (the ones still travelling count too). */
+  maxSpies: number;
+  /** Ticks a spy needs to get into place in the target province. */
+  infiltrateTicks: number;
+  /** Ticks a spy survives once in place before the cover is blown (the mission must finish before). */
+  coverTicks: number;
+  /** Sabotage: destroys one building of the province. The spy leaves when it is done. */
+  sabotage: { ticks: number };
+  /** Disinformation: lowers the morale of the province by `moraleDamage`. The spy leaves when it is done. */
+  disinformation: { ticks: number; moraleDamage: number };
 }
 
 export interface Ruleset {
@@ -112,6 +178,9 @@ export interface Ruleset {
   morale: MoraleRules;
   victory: VictoryRules;
   diplomacy: DiplomacyRules;
+  vision: VisionRules;
+  /** Spies. Omit to play without espionage (the orders then fail with `espionage_unavailable`). */
+  espionage?: EspionageRules;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,9 +190,11 @@ export interface Ruleset {
 export interface ProvinceDef {
   id: ProvinceId;
   name: string;
-  /** Resource produced by the province (single resource per province for now). */
+  /** Land (default) or sea. Sea provinces have no owner, no buildings and produce nothing. */
+  terrain?: Terrain;
+  /** Resource produced by the province (single resource per province for now). Unused at sea. */
   resource: ResourceId;
-  /** Amount produced per tick while the province has an owner. */
+  /** Amount produced per tick while the province has an owner. Always 0 at sea. */
   production: number;
 }
 
@@ -172,6 +243,8 @@ export interface Army {
   location: ProvinceId;
   units: Units;
   order: MoveOrder | null;
+  /** Fleets only: when true the ships do not shell the coast. Default false (they fire). */
+  holdFire?: boolean;
 }
 
 /** A batch of units being trained in a province. */
@@ -221,6 +294,29 @@ export interface Proposal {
   expiresAt: number;
 }
 
+/** What a spy in place is busy with. A spy with no mission only watches. */
+export type SpyMission =
+  | { kind: 'sabotage'; buildingType: BuildingId; ticksLeft: number }
+  | { kind: 'disinformation'; ticksLeft: number };
+
+/** The mission a player asks for (the ticks come from the ruleset). */
+export type SpyMissionRequest = { kind: 'sabotage'; buildingType: BuildingId } | { kind: 'disinformation' };
+
+/** A secret agent in a foreign province. Nobody but its owner (and the owner's allies' view) knows it is there. */
+export interface Spy {
+  id: string;
+  owner: PlayerId;
+  provinceId: ProvinceId;
+  /** Ticks before the spy is in place. 0 = in place: it sees the province and can start a mission. */
+  infiltrationLeft: number;
+  /** Ticks before the cover is blown. Only counts down once the spy is in place. */
+  coverLeft: number;
+  mission: SpyMission | null;
+}
+
+/** Why a spy is gone. */
+export type SpyRemovedReason = 'mission_done' | 'cover_blown' | 'target_changed' | 'recalled';
+
 export type VictoryReason = 'domination' | 'last_standing' | 'extinction' | 'coalition';
 
 /**
@@ -236,6 +332,10 @@ export interface GameOutcome {
 
 export type GameEvent =
   | { tick: number; type: 'army_arrived'; armyId: ArmyId; provinceId: ProvinceId }
+  /** A fleet at sea shelled the enemy armies in the coastal province `provinceId`. */
+  | { tick: number; type: 'coast_bombarded'; armyId: ArmyId; provinceId: ProvinceId }
+  /** A fleet landed its troops: `armyId` is now on land, the ships stayed at sea as `fleetId`. */
+  | { tick: number; type: 'army_landed'; armyId: ArmyId; fleetId: ArmyId; provinceId: ProvinceId }
   | {
       tick: number;
       type: 'recruit_completed';
@@ -257,6 +357,41 @@ export type GameEvent =
   | { tick: number; type: 'war_declared'; from: PlayerId; to: PlayerId; warAt: number }
   | { tick: number; type: 'relation_changed'; a: PlayerId; b: PlayerId; status: RelationStatus; reason: 'treaty' | 'declared' | 'expired' }
   | { tick: number; type: 'battle'; provinceId: ProvinceId; owners: PlayerId[] }
+  /** A spy got into place. Only its owner hears about it. */
+  | { tick: number; type: 'spy_in_place'; spyId: string; owner: PlayerId; provinceId: ProvinceId }
+  /**
+   * A spy is gone. Its owner always hears about it; the owner of the province (`target`) only when the
+   * cover was blown. A spy that finished its mission is not a loss: the event just says it came home.
+   */
+  | {
+      tick: number;
+      type: 'spy_removed';
+      spyId: string;
+      owner: PlayerId;
+      provinceId: ProvinceId;
+      target: PlayerId | null;
+      reason: SpyRemovedReason;
+    }
+  /** A spy destroyed a building. `by` is hidden (null) in the view of the victim, who only sees the damage. */
+  | {
+      tick: number;
+      type: 'building_sabotaged';
+      provinceId: ProvinceId;
+      buildingType: BuildingId;
+      by: PlayerId | null;
+      target: PlayerId;
+    }
+  /** A spy hurt the morale of a province. `by` is hidden (null) in the view of the victim. */
+  | {
+      tick: number;
+      type: 'morale_sabotaged';
+      provinceId: ProvinceId;
+      damage: number;
+      by: PlayerId | null;
+      target: PlayerId;
+    }
+  /** The mission of a spy came to nothing (the building was already gone). The spy goes on watching. */
+  | { tick: number; type: 'spy_mission_failed'; spyId: string; owner: PlayerId; provinceId: ProvinceId }
   | { tick: number; type: 'army_destroyed'; armyId: ArmyId; provinceId: ProvinceId }
   | {
       tick: number;
@@ -283,7 +418,9 @@ export interface GameState {
   relations: Relationship[];
   /** Offers waiting for an answer, in the order they were made. */
   proposals: Proposal[];
-  /** Counter used to generate deterministic ids (jobs, new armies, proposals). */
+  /** Spies in foreign provinces (travelling or in place), in the order they were sent. */
+  spies: Spy[];
+  /** Counter used to generate deterministic ids (jobs, new armies, proposals, spies). */
   nextId: number;
   /** Players with no provinces, armies or recruit batches left. Never shrinks. */
   eliminated: PlayerId[];

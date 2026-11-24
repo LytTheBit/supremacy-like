@@ -1,4 +1,5 @@
-import type { Ruleset, Units } from './types';
+import type { Ruleset, UnitDomain, Units } from './types';
+import { splitByDomain } from './naval';
 
 /**
  * Simplified combat model (no randomness, no external calculator needed).
@@ -61,6 +62,60 @@ export function sideStats(rules: Ruleset, units: Units): SideStats {
   return stats;
 }
 
+/**
+ * Attack of a side against a particular enemy side. Units with `vs` multipliers (bombers,
+ * fighters, infantry against aircraft...) are weighted by the share of the enemy's units in each
+ * domain. Without any `vs` this is exactly sideStats().attack.
+ */
+export function attackAgainst(rules: Ruleset, attacker: Units, target: Units): number {
+  const parts = splitByDomain(rules, target);
+  const counts = {
+    land: totalCount(parts.land),
+    sea: totalCount(parts.sea),
+    air: totalCount(parts.air),
+  };
+  const all = counts.land + counts.sea + counts.air;
+
+  let attack = 0;
+  for (const [type, count] of Object.entries(attacker)) {
+    const def = rules.units[type];
+    if (!def) throw new Error(`Unknown unit type: ${type}`);
+    let factor = 1;
+    if (def.vs && all > 0) {
+      factor = 0;
+      for (const domain of ['land', 'sea', 'air'] as UnitDomain[]) {
+        factor += (counts[domain] / all) * (def.vs[domain] ?? 1);
+      }
+    }
+    attack += def.attack * count * factor;
+  }
+  return attack * (1 + commanderBonus(rules, attacker));
+}
+
+/** Shelling power of a fleet: the sum of `bombard` over its ships. 0 if none of them can bombard. */
+export function bombardPower(rules: Ruleset, units: Units): number {
+  let power = 0;
+  for (const [type, count] of Object.entries(units)) {
+    if (count <= 0) continue;
+    const def = rules.units[type];
+    if (!def) throw new Error(`Unknown unit type: ${type}`);
+    power += (def.bombard ?? 0) * count;
+  }
+  return power;
+}
+
+/**
+ * Survival factor (0..1) of a force that is shelled for one tick with the given power. One-sided:
+ * same damage formula as a battle round, but the target does not shoot back.
+ */
+export function shellingSurvival(rules: Ruleset, power: number, target: Units): number {
+  const stats = sideStats(rules, target);
+  if (power <= 0 || stats.hp <= 0) return 1;
+  const damage = ((power * power) / (power + stats.defense)) * rules.combat.damageScale;
+  const survival = Math.max(0, 1 - damage / stats.hp);
+  return totalCount(target) * survival < rules.combat.minUnitsAlive ? 0 : survival;
+}
+
 /** Multiplies all counts by a factor. A factor <= 0 wipes the army out. */
 export function scaleUnits(units: Units, factor: number): Units {
   if (factor <= 0) return {};
@@ -106,9 +161,9 @@ export function resolveRound(
     let incoming = 0;
     stats.forEach((attacker, j) => {
       if (i === j || attacker.attack <= 0 || !hostile(j, i)) return;
-      const damage =
-        ((attacker.attack * attacker.attack) / (attacker.attack + target.defense)) *
-        rules.combat.damageScale;
+      const attack = attackAgainst(rules, sides[j] ?? {}, sides[i] ?? {});
+      if (attack <= 0) return;
+      const damage = ((attack * attack) / (attack + target.defense)) * rules.combat.damageScale;
       incoming += damage / (enemyCount[j] ?? 1);
     });
 

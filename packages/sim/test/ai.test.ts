@@ -95,8 +95,21 @@ describe('AI movement', () => {
       { id: 'b-south', owner: 'blue', location: 'msouth', units: { infantry: 40 } },
     ]);
     // Every route to a province red does not own crosses mnorth or msouth.
-    const next = runAi(state, rules, 'red');
+    // Without fog the AI sees the two big armies and stays home.
+    const noFog = { ...rules, vision: { ...rules.vision, fog: false } };
+    const next = runAi(state, noFog, 'red');
     expect(next.armies.find((a) => a.id === 'r1')?.order).toBeNull();
+  });
+
+  it('cannot see the big enemy armies through the fog, so it walks into them', () => {
+    const state = duelGame([
+      redArmy(10),
+      blueGuard,
+      { id: 'b-north', owner: 'blue', location: 'mnorth', units: { infantry: 40 } },
+      { id: 'b-south', owner: 'blue', location: 'msouth', units: { infantry: 40 } },
+    ]);
+    const next = runAi(state, rules, 'red');
+    expect(next.armies.find((a) => a.id === 'r1')?.order).not.toBeNull();
   });
 
   it('does not move armies that are fighting', () => {

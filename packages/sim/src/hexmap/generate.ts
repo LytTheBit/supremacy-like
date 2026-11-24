@@ -32,6 +32,13 @@ export interface GenerateOptions {
   connectIslands?: boolean;
   /** Enclosed sea areas up to this size are filled in as land. Default 3. */
   maxLakeCells?: number;
+  /**
+   * Number of sea provinces to carve out of the sea (ships sail through them). 0 keeps the
+   * sea as plain water and links islands with bridge routes. Default 0.
+   */
+  seaProvinceCount?: number;
+  /** Sea areas smaller than this stay open water instead of becoming a sea province. Default 6. */
+  minSeaCells?: number;
 }
 
 /**
@@ -186,13 +193,80 @@ export function generateHexMap(options: GenerateOptions): HexMapData {
     };
   });
 
+  // --- Sea provinces (optional) ------------------------------------------------------
+  // Same recipe as the land: seeds spread out over every big sea area, then a noisy flood fill.
+  // It runs after the land is finished and only touches the random generator when asked for,
+  // so maps without sea provinces stay exactly the same.
+  const seaIds: string[] = [];
+  const seaOwner: number[] = Array<number>(total).fill(-1);
+  const seaCount = Math.max(0, Math.floor(options.seaProvinceCount ?? 0));
+  if (seaCount > 0) {
+    const minSeaCells = Math.max(1, options.minSeaCells ?? 6);
+    const isWater = isLand.map((land, i) => !(land && (owner[i] ?? -1) >= 0));
+    let areas = landComponents(isWater, neighbors).filter((c) => c.length >= minSeaCells);
+    areas.sort((x, y) => y.length - x.length || (x[0] ?? 0) - (y[0] ?? 0));
+    areas = areas.slice(0, seaCount);
+
+    if (areas.length > 0) {
+      const allocation = allocateSeeds(
+        areas.map((c) => c.length),
+        seaCount,
+      );
+      const seaSeeds: number[] = [];
+      areas.forEach((area, a) => seaSeeds.push(...pickSeeds(area, allocation[a] ?? 1, hexes, rng)));
+
+      const passable: boolean[] = Array<boolean>(total).fill(false);
+      for (const area of areas) for (const i of area) passable[i] = true;
+      const seaNoise = seed + 104729;
+      const seaStep = planar.map((p) => 1 + roughness * fbm(p.x * 0.3, p.y * 0.3, seaNoise, 2));
+      const seaDist: number[] = Array<number>(total).fill(Infinity);
+      const seaHeap = new MinHeap();
+      seaSeeds.forEach((cell, n) => {
+        seaOwner[cell] = n;
+        seaDist[cell] = 0;
+        seaHeap.push(0, cell);
+      });
+      for (;;) {
+        const top = seaHeap.pop();
+        if (!top) break;
+        const [d, cell] = top;
+        if (d > (seaDist[cell] ?? Infinity)) continue;
+        for (const n of neighbors[cell] ?? []) {
+          if (!passable[n]) continue;
+          const nd = d + (seaStep[n] ?? 1);
+          if (nd < (seaDist[n] ?? Infinity)) {
+            seaDist[n] = nd;
+            seaOwner[n] = seaOwner[cell] ?? -1;
+            seaHeap.push(nd, n);
+          }
+        }
+      }
+      const padSea = String(seaSeeds.length).length;
+      seaSeeds.forEach((_, n) => seaIds.push(`s${String(n + 1).padStart(padSea, '0')}`));
+    }
+  }
+  const seaProvinces: ProvinceDef[] = seaIds.map((id, n) => ({
+    id,
+    name: `Sea ${n + 1}`,
+    terrain: 'sea',
+    resource: resources[0] ?? 'grain',
+    production: 0,
+  }));
+
   const cells: HexCell[] = hexes.map((h, i) => {
     const s = owner[i] ?? -1;
     const land = isLand[i] === true && s >= 0;
-    return { q: h.q, r: h.r, kind: land ? 'land' : 'sea', province: land ? (provinceIds[s] ?? null) : null };
+    if (land) return { q: h.q, r: h.r, kind: 'land', province: provinceIds[s] ?? null };
+    const sea = seaOwner[i] ?? -1;
+    return { q: h.q, r: h.r, kind: 'sea', province: sea >= 0 ? (seaIds[sea] ?? null) : null };
   });
 
-  const map: HexMapData = { id: options.id ?? `generated-${seed}`, cells, provinces, links: [] };
+  const map: HexMapData = {
+    id: options.id ?? `generated-${seed}`,
+    cells,
+    provinces: [...provinces, ...seaProvinces],
+    links: [],
+  };
   if (options.connectIslands ?? true) map.links = findBridgeLinks(map);
   return map;
 }

@@ -46,6 +46,10 @@ function describe(event: GameEvent): string {
   switch (event.type) {
     case 'army_arrived':
       return `${event.armyId} arrived at ${event.provinceId}`;
+    case 'coast_bombarded':
+      return `${event.armyId} shells ${event.provinceId}`;
+    case 'army_landed':
+      return `${event.armyId} landed at ${event.provinceId} (fleet ${event.fleetId} stays at sea)`;
     case 'recruit_completed':
       return `${event.count} ${event.unitType} trained at ${event.provinceId} -> ${event.armyId}`;
     case 'recruit_cancelled':
@@ -76,6 +80,16 @@ function describe(event: GameEvent): string {
       return `${event.from} declares war on ${event.to} (starts at tick ${event.warAt})`;
     case 'relation_changed':
       return `${event.a} and ${event.b}: ${event.status}`;
+    case 'spy_in_place':
+      return `${event.owner}'s spy is in place at ${event.provinceId}`;
+    case 'spy_removed':
+      return `${event.owner}'s spy at ${event.provinceId} is gone (${event.reason})`;
+    case 'spy_mission_failed':
+      return `${event.owner}'s spy at ${event.provinceId} found nothing to do`;
+    case 'building_sabotaged':
+      return `${event.buildingType} sabotaged at ${event.provinceId}`;
+    case 'morale_sabotaged':
+      return `morale at ${event.provinceId} lowered by ${event.damage}`;
   }
 }
 

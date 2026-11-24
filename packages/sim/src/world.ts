@@ -1,4 +1,5 @@
 import { totalCount } from './combat';
+import { armyKind, cargoFits, hasAirUnits, hasNavalUnits, isSeaProvince, splitByDomain } from './naval';
 import type {
   Army,
   ArmyId,
@@ -36,6 +37,12 @@ export function createGame(setup: GameSetup): GameState {
   const playerIds = new Set(setup.players.map((p) => p.id));
 
   for (const province of map.provinces) {
+    if (province.terrain !== undefined && province.terrain !== 'land' && province.terrain !== 'sea') {
+      throw new Error(`Province ${province.id} has an unknown terrain: ${String(province.terrain)}`);
+    }
+    if (isSeaProvince(province) && province.production !== 0) {
+      throw new Error(`Sea province ${province.id} cannot produce resources`);
+    }
     if (!rules.resources.includes(province.resource)) {
       throw new Error(`Province ${province.id} uses unknown resource: ${province.resource}`);
     }
@@ -65,6 +72,12 @@ export function createGame(setup: GameSetup): GameState {
   if (!(Number.isInteger(diplomacy.proposalTicks) && diplomacy.proposalTicks > 0)) {
     throw new Error('diplomacy.proposalTicks must be a positive integer');
   }
+  const { vision } = rules;
+  if (!(vision.provinceRadius >= 0)) throw new Error('vision.provinceRadius must not be negative');
+  if (!(vision.unitRadius >= 0)) throw new Error('vision.unitRadius must not be negative');
+  for (const [type, def] of Object.entries(rules.units)) {
+    if (def.vision !== undefined && !(def.vision >= 0)) throw new Error(`Unit ${type} has a negative vision`);
+  }
   for (const [type, def] of Object.entries(rules.units)) {
     for (const resource of Object.keys(def.cost)) {
       if (!rules.resources.includes(resource)) {
@@ -80,6 +93,21 @@ export function createGame(setup: GameSetup): GameState {
     }
   }
   for (const [type, def] of Object.entries(rules.units)) {
+    if (def.domain === 'air' && !(def.range !== undefined && def.range > 0)) {
+      throw new Error(`Air unit ${type} needs a positive range`);
+    }
+    if (def.bombard !== undefined && !(def.bombard >= 0 && def.domain === 'sea')) {
+      throw new Error(`Unit ${type}: only sea units can have a non-negative bombard value`);
+    }
+    if (def.range !== undefined && def.domain !== 'air') throw new Error(`Unit ${type}: only air units have a range`);
+    if (def.domain !== undefined && def.domain !== 'land' && def.domain !== 'sea' && def.domain !== 'air') {
+      throw new Error(`Unit ${type} has an unknown domain: ${String(def.domain)}`);
+    }
+    if (def.capacity !== undefined && !(def.capacity >= 0 && def.domain === 'sea')) {
+      throw new Error(`Unit ${type}: only sea units can have a non-negative capacity`);
+    }
+  }
+  for (const [type, def] of Object.entries(rules.units)) {
     if (def.requires !== undefined && !rules.buildings[def.requires]) {
       throw new Error(`Unit ${type} requires unknown building: ${def.requires}`);
     }
@@ -92,8 +120,10 @@ export function createGame(setup: GameSetup): GameState {
       throw new Error(`Edge ${edge.a}-${edge.b} must have a positive distance`);
     }
   }
+  const seaIds = new Set(map.provinces.filter(isSeaProvince).map((p) => p.id));
   for (const [provinceId, ownerId] of Object.entries(setup.owners)) {
     if (!provinceIds.has(provinceId)) throw new Error(`Unknown province in owners: ${provinceId}`);
+    if (seaIds.has(provinceId)) throw new Error(`Sea province ${provinceId} cannot have an owner`);
     if (!playerIds.has(ownerId)) throw new Error(`Unknown player in owners: ${ownerId}`);
   }
 
@@ -107,6 +137,24 @@ export function createGame(setup: GameSetup): GameState {
     for (const type of Object.keys(army.units)) {
       if (!rules.units[type]) throw new Error(`Army ${army.id} has unknown unit type: ${type}`);
     }
+    const parts = splitByDomain(rules, army.units);
+    if (hasAirUnits(rules, army.units) && (Object.keys(parts.land).length > 0 || Object.keys(parts.sea).length > 0)) {
+      throw new Error(`Army ${army.id} mixes aircraft with other units`);
+    }
+    if (armyKind(rules, army.units) === 'air') {
+      const based = (setup.buildings ?? []).some(
+        (b) => b.provinceId === army.location && rules.buildings[b.type]?.airbase === true,
+      );
+      if (!based) throw new Error(`Army ${army.id} has aircraft outside an airbase`);
+    } else if (seaIds.has(army.location)) {
+      if (!hasNavalUnits(rules, army.units)) throw new Error(`Army ${army.id} has no ships but starts at sea`);
+      if (!cargoFits(rules, army.units)) throw new Error(`Army ${army.id} carries more troops than its ships can hold`);
+    } else if (hasNavalUnits(rules, army.units)) {
+      const docked = (setup.buildings ?? []).some(
+        (b) => b.provinceId === army.location && rules.buildings[b.type]?.harbor === true,
+      );
+      if (!docked) throw new Error(`Army ${army.id} has ships on land without a harbor`);
+    }
     return { ...army, units: { ...army.units }, order: null };
   });
 
@@ -116,6 +164,7 @@ export function createGame(setup: GameSetup): GameState {
       throw new Error(`Building ${building.type} is placed in unknown province: ${building.provinceId}`);
     }
     if (!rules.buildings[building.type]) throw new Error(`Unknown building type: ${building.type}`);
+    if (seaIds.has(building.provinceId)) throw new Error(`Building ${building.type} cannot stand at sea`);
     const list = startingBuildings.get(building.provinceId) ?? [];
     if (list.includes(building.type)) {
       throw new Error(`Duplicate ${building.type} in province ${building.provinceId}`);
@@ -166,9 +215,19 @@ export function createGame(setup: GameSetup): GameState {
     constructionQueue: [],
     relations,
     proposals: [],
+    spies: [],
     nextId: 1,
     eliminated: [],
     outcome: null,
     events: [],
   };
+}
+
+/** Generates an army id that does not collide with existing ones. Advances `state.nextId`. */
+export function freshArmyId(state: GameState): ArmyId {
+  for (;;) {
+    const candidate = `army-${state.nextId}`;
+    state.nextId += 1;
+    if (!state.armies.some((a) => a.id === candidate)) return candidate;
+  }
 }

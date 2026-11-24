@@ -39,9 +39,15 @@ export function makeEdgeDistance(edges: Edge[]): (a: ProvinceId, b: ProvinceId) 
 /**
  * Shortest path by total distance (not by number of hops).
  * Ties are broken by province id so the result is deterministic.
- * Returns null when the target is unreachable.
+ * Returns null when the target is unreachable (with `canStep`, steps it refuses do not exist).
  */
-export function findPath(edges: Edge[], from: ProvinceId, to: ProvinceId): PathResult | null {
+export function findPath(
+  edges: Edge[],
+  from: ProvinceId,
+  to: ProvinceId,
+  /** Optional rule that says whether the step between two adjacent provinces is allowed. */
+  canStep?: (from: ProvinceId, to: ProvinceId) => boolean,
+): PathResult | null {
   if (from === to) return { path: [], distance: 0 };
 
   const adjacency = buildAdjacency(edges);
@@ -62,6 +68,7 @@ export function findPath(edges: Edge[], from: ProvinceId, to: ProvinceId): PathR
     visited.add(node);
 
     for (const neighbor of adjacency.get(node) ?? []) {
+      if (canStep && !canStep(node, neighbor.to)) continue;
       const candidate = nodeDist + neighbor.distance;
       if (candidate < (dist.get(neighbor.to) ?? Infinity)) {
         dist.set(neighbor.to, candidate);

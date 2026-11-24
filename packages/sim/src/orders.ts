@@ -1,7 +1,21 @@
 import { effectiveTrainingTicks } from './buildings';
 import { areHostile } from './diplomacy';
 import { canRecruitAt } from './morale';
+import {
+  canDockAt,
+  cargoCapacity,
+  findArmyPath,
+  hasLandUnits,
+  hasNavalUnits,
+  isCoastal,
+  isSeaProvince,
+  landStepRule,
+  landTroops,
+  splitByDomain,
+} from './naval';
+import { bombardPower, sumUnits } from './combat';
 import { findPath } from './pathfinding';
+import { freshArmyId } from './world';
 import type { ArmyId, BuildingId, GameState, PlayerId, ProvinceId, Ruleset, UnitTypeId } from './types';
 
 export type OrderError =
@@ -25,6 +39,8 @@ export function orderMove(
   playerId: PlayerId,
   armyId: ArmyId,
   target: ProvinceId,
+  /** Needed to move armies with ships; without it only land troops can be moved. */
+  rules?: Ruleset,
 ): OrderResult {
   if (state.outcome) return { ok: false, error: 'game_over' };
   const army = state.armies.find((a) => a.id === armyId);
@@ -33,7 +49,10 @@ export function orderMove(
   if (!state.provinces.some((p) => p.id === target)) return { ok: false, error: 'province_not_found' };
   if (army.location === target) return { ok: false, error: 'already_there' };
 
-  const route = findPath(state.edges, army.location, target);
+  // The route follows the movement rules of the army: land troops walk, fleets sail.
+  const route = rules
+    ? findArmyPath(state, rules, army, target)
+    : findPath(state.edges, army.location, target, landStepRule(state.provinces));
   if (!route) return { ok: false, error: 'no_path' };
 
   const next = structuredClone(state);
@@ -126,6 +145,7 @@ export type BuildError =
   | 'unknown_building'
   | 'already_built'
   | 'already_building'
+  | 'not_coastal'
   | 'enemy_present'
   | 'insufficient_resources';
 
@@ -157,6 +177,7 @@ export function orderBuild(
 
   const def = rules.buildings[buildingType];
   if (!def) return { ok: false, error: 'unknown_building' };
+  if (def.coastal && !isCoastal(state, provinceId)) return { ok: false, error: 'not_coastal' };
   if (province.buildings.includes(buildingType)) return { ok: false, error: 'already_built' };
   if (state.constructionQueue.some((j) => j.provinceId === provinceId && j.buildingType === buildingType)) {
     return { ok: false, error: 'already_building' };
@@ -208,5 +229,138 @@ export function orderStop(state: GameState, playerId: PlayerId, armyId: ArmyId):
   const nextArmy = next.armies.find((a) => a.id === armyId);
   if (!nextArmy) return { ok: false, error: 'army_not_found' };
   nextArmy.order = null;
+  return { ok: true, state: next };
+}
+
+export type EmbarkError =
+  | 'game_over'
+  | 'army_not_found'
+  | 'not_owner'
+  | 'not_same_province'
+  | 'army_moving'
+  | 'not_land_army'
+  | 'not_a_fleet'
+  | 'not_in_port'
+  | 'enemy_present'
+  | 'over_capacity';
+
+export type EmbarkResult = { ok: true; state: GameState } | { ok: false; error: EmbarkError };
+
+/**
+ * Loads a land army onto a fleet that is docked in the same port. The land army disappears
+ * and its units become the cargo of the fleet (the fleet keeps its id). Both must be idle,
+ * and the fleet's capacity must cover all the land units it would carry.
+ */
+export function orderEmbark(
+  state: GameState,
+  rules: Ruleset,
+  playerId: PlayerId,
+  armyId: ArmyId,
+  fleetId: ArmyId,
+): EmbarkResult {
+  if (state.outcome) return { ok: false, error: 'game_over' };
+  const army = state.armies.find((a) => a.id === armyId);
+  const fleet = state.armies.find((a) => a.id === fleetId);
+  if (!army || !fleet) return { ok: false, error: 'army_not_found' };
+  if (army.owner !== playerId || fleet.owner !== playerId) return { ok: false, error: 'not_owner' };
+  if (army.location !== fleet.location) return { ok: false, error: 'not_same_province' };
+  if (army.order || fleet.order) return { ok: false, error: 'army_moving' };
+  if (hasNavalUnits(rules, army.units) || !hasLandUnits(rules, army.units)) {
+    return { ok: false, error: 'not_land_army' };
+  }
+  if (!hasNavalUnits(rules, fleet.units)) return { ok: false, error: 'not_a_fleet' };
+
+  const province = state.provinces.find((p) => p.id === army.location);
+  if (!province || !canDockAt(state, rules, playerId, province)) return { ok: false, error: 'not_in_port' };
+  if (state.armies.some((a) => a.location === army.location && areHostile(state, playerId, a.owner))) {
+    return { ok: false, error: 'enemy_present' };
+  }
+
+  const merged = sumUnits([fleet.units, army.units]);
+  if (landTroops(rules, merged) > cargoCapacity(rules, merged) + 1e-9) {
+    return { ok: false, error: 'over_capacity' };
+  }
+
+  const next = structuredClone(state);
+  const nextFleet = next.armies.find((a) => a.id === fleetId);
+  if (!nextFleet) return { ok: false, error: 'army_not_found' };
+  nextFleet.units = merged;
+  next.armies = next.armies.filter((a) => a.id !== armyId);
+  return { ok: true, state: next };
+}
+
+export type DisembarkError =
+  | 'game_over'
+  | 'army_not_found'
+  | 'not_owner'
+  | 'army_moving'
+  | 'nothing_to_unload'
+  | 'not_in_port'
+  | 'enemy_present';
+
+export type DisembarkResult = { ok: true; state: GameState } | { ok: false; error: DisembarkError };
+
+/**
+ * Unloads the cargo of a fleet that is docked in a port: the land units become a new idle army
+ * in the port province, the ships keep the original army. At sea this is not possible: troops
+ * get off by landing on a coast (move the fleet to a coastal province).
+ */
+export function orderDisembark(
+  state: GameState,
+  rules: Ruleset,
+  playerId: PlayerId,
+  armyId: ArmyId,
+): DisembarkResult {
+  if (state.outcome) return { ok: false, error: 'game_over' };
+  const army = state.armies.find((a) => a.id === armyId);
+  if (!army) return { ok: false, error: 'army_not_found' };
+  if (army.owner !== playerId) return { ok: false, error: 'not_owner' };
+  if (army.order) return { ok: false, error: 'army_moving' };
+  if (!hasNavalUnits(rules, army.units) || !hasLandUnits(rules, army.units)) {
+    return { ok: false, error: 'nothing_to_unload' };
+  }
+
+  const province = state.provinces.find((p) => p.id === army.location);
+  if (!province || isSeaProvince(province) || !canDockAt(state, rules, playerId, province)) {
+    return { ok: false, error: 'not_in_port' };
+  }
+  if (state.armies.some((a) => a.location === army.location && areHostile(state, playerId, a.owner))) {
+    return { ok: false, error: 'enemy_present' };
+  }
+
+  const next = structuredClone(state);
+  const nextArmy = next.armies.find((a) => a.id === armyId);
+  if (!nextArmy) return { ok: false, error: 'army_not_found' };
+  const { land, sea } = splitByDomain(rules, nextArmy.units);
+  nextArmy.units = sea;
+  next.armies.push({ id: freshArmyId(next), owner: playerId, location: army.location, units: land, order: null });
+  return { ok: true, state: next };
+}
+
+export type HoldFireError = 'game_over' | 'army_not_found' | 'not_owner' | 'cannot_bombard';
+export type HoldFireResult = { ok: true; state: GameState } | { ok: false; error: HoldFireError };
+
+/**
+ * Tells a fleet to stop (hold = true) or start (hold = false) shelling the coast. Only fleets
+ * with ships that can bombard have anything to hold; the setting stays until it is changed.
+ */
+export function orderHoldFire(
+  state: GameState,
+  rules: Ruleset,
+  playerId: PlayerId,
+  armyId: ArmyId,
+  hold: boolean,
+): HoldFireResult {
+  if (state.outcome) return { ok: false, error: 'game_over' };
+  const army = state.armies.find((a) => a.id === armyId);
+  if (!army) return { ok: false, error: 'army_not_found' };
+  if (army.owner !== playerId) return { ok: false, error: 'not_owner' };
+  if (bombardPower(rules, army.units) <= 0) return { ok: false, error: 'cannot_bombard' };
+
+  const next = structuredClone(state);
+  const nextArmy = next.armies.find((a) => a.id === armyId);
+  if (!nextArmy) return { ok: false, error: 'army_not_found' };
+  if (hold) nextArmy.holdFire = true;
+  else delete nextArmy.holdFire;
   return { ok: true, state: next };
 }

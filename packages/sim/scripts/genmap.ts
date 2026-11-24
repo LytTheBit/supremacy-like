@@ -7,7 +7,8 @@ import {
   validateHexMap,
 } from '../src';
 
-// Usage: npm run genmap -- --seed 7 --provinces 24 --width 48 --height 32 --land 0.6 --roughness 1.2 --organic 0.6
+// Usage: npm run genmap -- --seed 7 --provinces 24 --width 48 --height 32 --land 0.6 --roughness 1.2 --organic 0.6 --sea 8
+// --sea N carves N sea provinces out of the water (ships sail through them).
 // --roughness changes the map itself (which cells belong to which province).
 // --organic only changes how borders are DRAWN (0 = plain hexes, 1 = very irregular); the game data is the same.
 function arg(name: string, fallback: number): number {
@@ -25,6 +26,7 @@ const map = generateHexMap({
   provinceCount: arg('provinces', 24),
   landRatio: arg('land', 0.6),
   roughness: arg('roughness', 1.2),
+  seaProvinceCount: arg('sea', 0),
 });
 
 const issues = validateHexMap(map);

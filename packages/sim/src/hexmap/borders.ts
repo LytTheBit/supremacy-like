@@ -12,13 +12,13 @@ export function extractBorders(map: HexMapData, size = 1): BorderSegment[] {
   const segments: BorderSegment[] = [];
 
   for (const cell of map.cells) {
-    if (cell.kind !== 'land' || cell.province === null) continue;
+    if (cell.province === null) continue;
     const corners = hexCorners(cell, size);
     const provinceId = cell.province;
 
     HEX_DIRECTIONS.forEach((direction, i) => {
       const neighbor = index.get(hexKey({ q: cell.q + direction.q, r: cell.r + direction.r }));
-      const other = neighbor && neighbor.kind === 'land' ? neighbor.province : null;
+      const other = neighbor?.province ?? null;
       if (other === provinceId) return;
       // A border between two provinces is seen from both sides: draw it from one only.
       if (other !== null && provinceId > other) return;

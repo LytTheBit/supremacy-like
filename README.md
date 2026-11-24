@@ -27,16 +27,19 @@ packages/sim/
     types.ts        plain JSON data types (state, ruleset, map, events)
     rulesets/       static game data (units, resources, combat tuning)
     maps/           sample maps (tiny: 5 provinces, duel: 12 provinces, symmetric)
-    pathfinding.ts  Dijkstra on the province graph
+    pathfinding.ts  Dijkstra on the province graph (optional rule for which steps are allowed)
+    naval.ts        sea provinces, ships, ports, cargo, landings: movement rules per army
     combat.ts       simplified combat model + previewBattle() "calculator"
     world.ts        createGame(): builds and validates the initial state
-    orders.ts       player orders (orderMove, orderStop, orderRecruit, orderBuild), validated and pure
+    orders.ts       player orders (orderMove, orderStop, orderRecruit, orderBuild, orderEmbark, orderDisembark), validated and pure
     diplomacy.ts    relations, proposals, declarations of war (orderPropose, orderRespond, orderDeclareWar)
+    espionage.ts    spies: orderSpy, orderSpyMission, orderRecallSpy, processEspionage (a phase of tick)
+    visibility.ts   fog of war: visibleProvinces, viewFor (the game as one player knows it)
     buildings.ts    effects of buildings (production, training time)
     morale.ts       province morale effects (production, recruitment)
     medals/         optional rules chosen when a game is created (generals)
     setup.ts        createSkirmish(): a ready-to-play game on a generated map
-    tick.ts         tick(): diplomacy -> movement -> combat -> morale -> conquest -> training -> building -> merging -> production -> victory
+    tick.ts         tick(): diplomacy -> movement -> combat -> morale -> conquest -> training -> building -> espionage -> merging -> production -> victory
     victory.ts      eliminations, last standing, domination
     ai.ts           runAi(): rule-based AI that plays through the normal orders
     match.ts        runMatch(): headless game loop (AI players, tick limit)
@@ -48,10 +51,42 @@ examples/           sample generated maps (open the SVGs in a browser)
 packages/client/
   src/
     session.ts      GameSession: map, ruleset, state, AI and player orders, with no React
-    log.ts          turns game events into event-log lines
-    components/     MapView (SVG), Inspector, DiplomacyPanel, TopBar, EventLog, NewGame
+    log.ts          turns game events into event-log lines (written when shown, so they follow the language)
+    labels.ts       display names of units, buildings, resources, medals and players
+    format.ts       numbers in the current language
+    i18n/           translations: en.ts (reference), it.ts, locales.ts (the list of languages), index.ts (t, setLocale)
+    components/     MapView (SVG), Inspector, DiplomacyPanel, TopBar, EventLog, NewGame, LanguageSelect
   scripts/snapshot.tsx
 ```
+
+## Sea and ships
+
+Sea provinces are opt-in (`generateHexMap({ seaProvinceCount })`, or "Mari e flotte" in the client);
+without them nothing changes. Sea provinces are never owned and produce nothing.
+
+- **Port** (coastal only) trains ships and lets them dock. **Cruiser** fights; **Transport** carries 10 land units.
+- A fleet sails through sea provinces; land troops ride along as cargo (`orderEmbark` in a port).
+- Cargo does not fight at sea but dies with its ships. Fleets cannot enter enemy land.
+- Landing: a fleet moving to a coastal land province drops its troops there as the last step; the ships stay at sea.
+- Domination counts land provinces only.
+
+- **Coastal bombardment:** ships with a `bombard` value (cruiser, battleship; not transports) shell the enemy armies on one
+  adjacent coast per tick while at sea, one-sided (no return fire). `orderHoldFire` stops/restarts it per fleet.
+
+## Air
+
+- **Airfield** trains aircraft and is where they land (own or allied). **Fighter** and **Bomber** fly over land and sea,
+  but never farther than their `range` from an airbase; an idle air army away from a base flies back on its own
+  and is lost if no base is in reach. Aircraft can leave a fight, never conquer, and are cheap to lose to massed rifles.
+- `UnitDef.vs` multiplies attack against land/sea/air targets (bombers beat ground and ships, fighters beat aircraft,
+  artillery cannot shoot at aircraft). Without any `vs` combat is exactly as before.
+
+## AI
+
+Besides the land game the AI builds an airfield (from `minProvincesForAir` provinces), trains fighters and bombers and
+raids visible enemy armies it would beat, flying home when it loses. When no target is left on foot and the map has seas
+it builds a port, gathers troops there, trains transports and cruisers, embarks, sails, lands, and brings the ships
+back. Switch parts off with `airForce: false` / `navy: false`.
 
 Planned: `server` (Node + WebSocket) for online multiplayer.
 
@@ -169,7 +204,27 @@ Truce partners and allies can share a province and walk through each other's lan
   rejects the rest. Every 10 ticks it asks for a truce from a player much stronger than itself and offers an
   alliance to a truce partner that shares an enemy. It never declares war and never attacks a player it is not
   at war with.
-- Shared vision between allies arrives with fog of war.
+- Allies share their vision (see Fog of war).
+
+## Fog of war
+
+With `rules.vision.fog` on (the default) a player only knows what lies within their vision.
+
+- **Vision** is a travel distance along the links between provinces. Owned provinces see
+  `vision.provinceRadius` (2.5); an army sees as far as its best unit: `UnitDef.vision`, or
+  `vision.unitRadius` (2) when a unit does not say (infantry 2.5, artillery 1.5). Allies share vision;
+  truce partners do not.
+- `visibleProvinces(state, rules, player)` gives the provinces in sight.
+- `viewFor(state, rules, player, memory?)` gives the game as that player knows it: a copy of the state
+  without enemy armies out of sight, without other players' stockpiles and queues, and with the events
+  about unseen places removed. **Ownership of provinces stays public**, like treaties.
+  Buildings and morale of provinces out of sight show what was last seen (`PlayerView.memory`; pass the
+  previous memory back in), or nothing if never seen.
+- The real state never changes because of fog: it only decides what each player knows.
+- **AI**: it obeys the fog. It only knows enemy armies inside its own vision, and assumes a province it
+  cannot see is empty when it plans an attack.
+- **Client**: `GameSession` keeps the real state private; snapshots carry the player's view and the list of
+  visible provinces. Provinces out of sight are darkened. The fog can be turned off when creating a game.
 
 ## Medals and generals
 
@@ -189,6 +244,53 @@ The **generals** medal adds the Military Academy and three commanders, trained l
 
 Types add up: 10 majors, 4 colonels and a general give +60%. `commanders.maxAffectedTroops` can
 limit how many troops benefit. Without the medal, these units and the building do not exist.
+
+## Espionage
+
+Implemented in `espionage.ts`; the numbers are in `rules.espionage` (omit it to play without spies).
+
+- **Sending**: `orderSpy(state, rules, player, province)` sends a spy to a land province owned by a
+  player who is not an ally (an enemy, or a truce partner). The cost (`cost`, grain and wood for now) is
+  paid at once. At most one spy per province and `maxSpies` per player. The spy needs `infiltrateTicks`
+  to get into place.
+- **Watching**: a spy in place puts its province in sight (buildings, morale, armies), and also shows
+  the jobs being trained or built there and the stockpile of the province's owner (`viewFor`).
+  Allies share it like any other vision. Other players' spies are never in a view, fog or not.
+- **Missions**: `orderSpyMission` gives a spy in place one mission, after which it goes home.
+  *Sabotage* destroys a chosen building (`sabotage.ticks`); *disinformation* lowers the morale of the
+  province by `disinformation.moraleDamage`. A building already gone makes the mission fail
+  (the spy goes on watching).
+- **Cover**: nothing is random. A spy in place is caught exactly `coverTicks` ticks later, so a mission
+  must finish before that (the interface and the AI check it). The spy is also dropped when its province
+  stops being foreign to it (conquered, or its owner became an ally) and when its owner is eliminated.
+- **Events**: the owner hears about its spies. The victim of a sabotage hears about the damage, never
+  about who did it (`by` is hidden in its view), and about a spy that was caught.
+- **AI**: every few ticks, if it has resources to spare, it sends a spy to the nearest enemy province;
+  a spy in place at war sabotages the most expensive building, or else spreads disinformation.
+  It only watches truce partners.
+
+## Languages
+
+The interface speaks every language listed in `packages/client/src/i18n/locales.ts` (English and
+Italian for now). The choice is saved in the browser; the first time the browser language is used,
+else English. Code, comments and the game data stay in English: only what the player reads is translated.
+
+- All texts are in a catalog: `en.ts` is the reference, `it.ts` the translation. A message is a string
+  with `{placeholders}`, or `{ one, other, ... }` plural forms chosen by the language's own rules
+  (`Intl.PluralRules`), with the number in `{count}`. Never build a sentence out of pieces.
+- Names that come from the game data have keys made from their id (`unit.infantry`, `building.port`,
+  `resource.iron`, `medal.generals.name`, `error.<code>` for failed orders). A missing one shows the
+  English name from the rules, so new content never breaks the interface.
+- The simulator has no texts at all: events and errors are codes, and the client writes the sentences.
+  The event log keeps functions that write the line when it is shown, so changing language
+  translates the log too.
+
+**To add a language** (say German): copy `en.ts` to `de.ts`, type it `Catalog` and translate the values
+(use `Partial<Catalog>` while it is unfinished: missing messages show in English), then add
+`de: { name: 'Deutsch', messages: de }` to `LOCALES` (and `dir: 'rtl'` for a right-to-left language).
+The selector, the saved choice and the browser detection pick it up. The tests check that every
+key, every placeholder, every unit/building/resource/medal and every error code of the simulator is
+translated in every complete language.
 
 ## Web client
 
@@ -217,13 +319,18 @@ With several enemies the damage is split evenly. All units of a side lose the sa
 - Conquest is instant when a single hostile owner is alone in a province.
 - Idle armies of the same owner in the same province merge automatically.
 - No retreat: armies in a battle cannot leave.
+- Fog of war has no "last seen armies": an enemy army that leaves your sight simply disappears from the map.
 - Diplomacy is basic: no messages, no trade, no demands, and nobody gets a say when an ally is attacked.
+- Espionage has no counter-espionage yet (the defender cannot hunt spies), spies cannot be sent to
+  neutral provinces or the sea, and a spy cannot be moved: it is recalled and a new one is sent.
+- There is no market yet: players cannot trade resources (the next step).
+- Right-to-left languages set `dir="rtl"` on the page but the stylesheet is not mirrored yet.
 - Recruitment: the full cost is paid when ordering; a batch lost to conquest during training
   is not refunded; finished units join a stationary army of the owner or form a new one.
 - Victory: a player is eliminated with no provinces, armies or batches in training. The last
   survivor wins, or whoever owns 60% of all provinces (domination), or a group of allies that together own it (coalition). A finished game is frozen
   and rejects orders.
-- AI: sees the whole map (no fog of war), does not defend, and recruits only infantry and artillery.
+- AI: obeys the fog of war, does not defend, and recruits only infantry and artillery.
   Two identical AIs from a symmetric start deadlock, which is expected.
 - Balance: wood is not used by any unit yet (it will be needed by buildings), and iron is the
   bottleneck of the current economy.

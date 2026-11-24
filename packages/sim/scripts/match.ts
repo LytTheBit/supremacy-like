@@ -31,6 +31,8 @@ function describe(event: GameEvent): string | null {
     case 'battle':
       return null; // too noisy
     case 'army_arrived':
+    case 'army_landed':
+    case 'coast_bombarded':
       return null; // too noisy
     case 'recruit_completed':
       return null; // too noisy
@@ -56,6 +58,15 @@ function describe(event: GameEvent): string | null {
       return null; // too noisy
     case 'relation_changed':
       return `${event.a} and ${event.b}: ${event.status}`;
+    case 'spy_in_place':
+    case 'spy_mission_failed':
+      return null; // too noisy
+    case 'spy_removed':
+      return event.reason === 'cover_blown' ? `${event.owner}'s spy caught at ${event.provinceId}` : null;
+    case 'building_sabotaged':
+      return `${event.buildingType} sabotaged at ${event.provinceId}`;
+    case 'morale_sabotaged':
+      return `morale at ${event.provinceId} lowered by ${event.damage}`;
   }
 }
 

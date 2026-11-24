@@ -13,10 +13,11 @@ export function adjacentProvincePairs(map: HexMapData): [ProvinceId, ProvinceId]
   const pairs: [ProvinceId, ProvinceId][] = [];
 
   for (const cell of map.cells) {
-    if (cell.kind !== 'land' || cell.province === null) continue;
+    // Land and sea provinces both count: a coast is a land-sea adjacency.
+    if (cell.province === null) continue;
     for (const n of hexNeighbors(cell)) {
       const other = index.get(hexKey(n));
-      if (!other || other.kind !== 'land' || other.province === null) continue;
+      if (!other || other.province === null) continue;
       if (other.province === cell.province) continue;
       const [a, b] =
         cell.province < other.province ? [cell.province, other.province] : [other.province, cell.province];
@@ -29,11 +30,11 @@ export function adjacentProvincePairs(map: HexMapData): [ProvinceId, ProvinceId]
   return pairs.sort((x, y) => x[0].localeCompare(y[0]) || x[1].localeCompare(y[1]));
 }
 
-/** Cells of each province. */
+/** Cells of each province (land provinces and sea provinces alike). */
 export function cellsByProvince(map: HexMapData): Map<ProvinceId, HexCell[]> {
   const groups = new Map<ProvinceId, HexCell[]>();
   for (const cell of map.cells) {
-    if (cell.kind !== 'land' || cell.province === null) continue;
+    if (cell.province === null) continue;
     const list = groups.get(cell.province) ?? [];
     list.push(cell);
     groups.set(cell.province, list);

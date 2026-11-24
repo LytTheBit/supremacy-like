@@ -1,4 +1,5 @@
 import { areAllied } from './diplomacy';
+import { isSeaProvince } from './naval';
 import type { GameState, PlayerId, Ruleset, VictoryReason } from './types';
 
 /**
@@ -9,7 +10,7 @@ import type { GameState, PlayerId, Ruleset, VictoryReason } from './types';
  *   recruit batches in training.
  * - Last standing: with two or more players in the game, the only survivor wins.
  * - Domination: a survivor owning at least `rules.victory.provinceShare`
- *   of ALL provinces wins.
+ *   of ALL land provinces wins.
  * - Coalition: a group of survivors that are ALL allied with each other wins together when
  *   the group together owns the domination share. Allying is never enough on its own: a lone
  *   survivor wins by last standing, but allies still have to reach the share.
@@ -45,9 +46,11 @@ export function checkVictory(state: GameState, rules: Ruleset): void {
     return;
   }
 
-  const needed = Math.ceil(rules.victory.provinceShare * state.provinces.length);
+  // Sea provinces cannot be owned, so they are not counted.
+  const landProvinces = state.provinces.filter((p) => !isSeaProvince(p));
+  const needed = Math.ceil(rules.victory.provinceShare * landProvinces.length);
   for (const group of groups) {
-    const owned = state.provinces.filter((p) => p.owner !== null && group.includes(p.owner)).length;
+    const owned = landProvinces.filter((p) => p.owner !== null && group.includes(p.owner)).length;
     if (owned >= needed) {
       finish(state, group, group.length === 1 ? 'domination' : 'coalition');
       return;
