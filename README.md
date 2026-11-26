@@ -34,12 +34,13 @@ packages/sim/
     orders.ts       player orders (orderMove, orderStop, orderRecruit, orderBuild, orderEmbark, orderDisembark), validated and pure
     diplomacy.ts    relations, proposals, declarations of war (orderPropose, orderRespond, orderDeclareWar)
     espionage.ts    spies: orderSpy, orderSpyMission, orderRecallSpy, processEspionage (a phase of tick)
+    market.ts       barter order book: orderMarketOffer, orderMarketAccept, orderMarketCancel, processMarket (a phase of tick)
     visibility.ts   fog of war: visibleProvinces, viewFor (the game as one player knows it)
     buildings.ts    effects of buildings (production, training time)
     morale.ts       province morale effects (production, recruitment)
     medals/         optional rules chosen when a game is created (generals)
     setup.ts        createSkirmish(): a ready-to-play game on a generated map
-    tick.ts         tick(): diplomacy -> movement -> combat -> morale -> conquest -> training -> building -> espionage -> merging -> production -> victory
+    tick.ts         tick(): diplomacy -> movement -> combat -> morale -> conquest -> training -> building -> espionage -> merging -> production -> victory -> market
     victory.ts      eliminations, last standing, domination
     ai.ts           runAi(): rule-based AI that plays through the normal orders
     match.ts        runMatch(): headless game loop (AI players, tick limit)
@@ -55,7 +56,7 @@ packages/client/
     labels.ts       display names of units, buildings, resources, medals and players
     format.ts       numbers in the current language
     i18n/           translations: en.ts (reference), it.ts, locales.ts (the list of languages), index.ts (t, setLocale)
-    components/     MapView (SVG), Inspector, DiplomacyPanel, TopBar, EventLog, NewGame, LanguageSelect
+    components/     MapView (SVG), Inspector, DiplomacyPanel, MarketPanel, TopBar, EventLog, NewGame, LanguageSelect
   scripts/snapshot.tsx
 ```
 
@@ -269,6 +270,34 @@ Implemented in `espionage.ts`; the numbers are in `rules.espionage` (omit it to 
   a spy in place at war sabotages the most expensive building, or else spreads disinformation.
   It only watches truce partners.
 
+## Market
+
+Implemented in `market.ts`; the numbers are in `rules.market` (omit it to play without a market).
+There is no money in the game, so the market is a **barter order book**: an offer says what you give and
+what you want in return ("2000 grain for 1500 iron"). It works like a continuous exchange.
+
+- **Placing an offer**: `orderMarketOffer(state, rules, player, give, giveAmount, want, wantAmount)`.
+  What you offer leaves your stockpile at once and is held in the order, so the same resources can never
+  be spent twice. At most `maxOrders` open offers per player, and each offer gives at least `minAmount`.
+- **Matching**: the new offer is traded right away against the open offers of other players that give what it
+  wants and want what it gives. The best price for the newcomer goes first (ties: the older offer), and every
+  trade happens at the price of the **older** offer, so whoever posted first never gets less than they asked.
+  Trades can be partial: an open offer keeps its price while it fills (both amounts shrink in the same
+  proportion) and what is left stays open. Offers never cross while they rest on the book, and a player's own
+  offers never trade with each other.
+- **Taking an offer**: `orderMarketAccept` posts the mirror of somebody else's offer (the client's *Accept* button).
+- **Closing**: `orderMarketCancel` returns what is left. An offer expires after `orderTicks` (what is left comes
+  back and the owner hears about it). A leftover below `minAmount` is not kept on the book: it goes back to its
+  owner. The offers of an eliminated player vanish.
+- **Public book**: everybody sees every open offer, its owner and its price, fog of war or not. The trades
+  themselves (`market_trade`, `market_order_expired`) are private: each side only hears about its own.
+  Anyone can trade with anyone, even a player they are at war with.
+- Resources are conserved: a trade only moves them (the tests check the totals after many trades).
+- **AI**: every `marketInterval` ticks, after building and recruiting, it compares each resource with its average
+  stock: far above is a surplus, far below a shortage. It takes an open offer that gives the shortage for the
+  surplus if it gets at least `marketAcceptRate` per unit it gives; else it offers up to half of the excess for
+  the shortage at `marketAskRate`. Switch it off with `market: false`.
+
 ## Languages
 
 The interface speaks every language listed in `packages/client/src/i18n/locales.ts` (English and
@@ -296,7 +325,7 @@ translated in every complete language.
 
 `npm run client` starts a game against the AI. Pick the map seed, the number of provinces, the
 medals and how organic the borders look (visual only). The game starts paused: use the speed
-buttons (1 tick per second at 1x). Click a province to see it, recruit and build; click one of your
+buttons (1 tick per second at 1x). Click a province to see it, recruit and build; the Market panel lists offers of others (Accept) and yours (Cancel) and posts new ones; click one of your
 armies (the numbered box), then a destination province to move it. Attacks show a battle preview.
 
 Everything about the game lives in `GameSession`; React only draws snapshots and calls its methods,
@@ -320,10 +349,10 @@ With several enemies the damage is split evenly. All units of a side lose the sa
 - Idle armies of the same owner in the same province merge automatically.
 - No retreat: armies in a battle cannot leave.
 - Fog of war has no "last seen armies": an enemy army that leaves your sight simply disappears from the map.
-- Diplomacy is basic: no messages, no trade, no demands, and nobody gets a say when an ally is attacked.
+- Diplomacy is basic: no messages, no demands, no direct deals between players (only the public market), and nobody gets a say when an ally is attacked.
 - Espionage has no counter-espionage yet (the defender cannot hunt spies), spies cannot be sent to
   neutral provinces or the sea, and a spy cannot be moved: it is recalled and a new one is sent.
-- There is no market yet: players cannot trade resources (the next step).
+- Market: barter only (no money, fees or price history); trading is not limited by diplomacy or distance, and the AI does not judge who it trades with.
 - Right-to-left languages set `dir="rtl"` on the page but the stylesheet is not mirrored yet.
 - Recruitment: the full cost is paid when ordering; a batch lost to conquest during training
   is not refunded; finished units join a stationary army of the owner or form a new one.
@@ -339,3 +368,11 @@ With several enemies the damage is split evenly. All units of a side lose the sa
 - No terrain or fog of war yet. Buildings cannot be damaged, upgraded or demolished.
 - The client plays one human against one AI (so the diplomacy panel has one row for now), and a game lives in the browser tab (no saving).
 - The AI trains commanders only once it has an army, and does not use morale to choose targets.
+
+## Chat, money and deals
+
+- **Money** is a resource (`rules.economy.currency`): every owned land province earns `incomePerProvince` per tick (scaled by morale). Nothing costs money yet; add `money` to a unit/building/spy cost to make it a sink.
+- **Chat** (`sim/src/chat.ts`): every conversation is a `Chat` (`direct` today, `group` ready for alliances). Messages are text, offer cards (treaties and trades, with their status), gifts or notices of war. Treaty offers now live in the chat.
+- **Deals** (`sim/src/trade.ts`): `orderOfferTrade` / `orderRespondTrade` / `orderCancelTrade` swap resources, money and provinces; `orderGift` delivers at once. The AI accepts fair deals when not at war and never gives provinces away.
+- **Spies** in place in a province read the chats of its owner from then on, plus the last `espionage.chatContext` messages before they arrived. Nobody in the chat learns about it.
+- **Market**: shown as a money board per good (prices per 1k); barter stays available.

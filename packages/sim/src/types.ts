@@ -162,6 +162,41 @@ export interface EspionageRules {
   sabotage: { ticks: number };
   /** Disinformation: lowers the morale of the province by `moraleDamage`. The spy leaves when it is done. */
   disinformation: { ticks: number; moraleDamage: number };
+  /**
+   * Wiretapping: when a spy gets into place it also reads this many of the latest messages of every
+   * chat the owner of the province takes part in (the context of the conversation). Default 6.
+   */
+  chatContext?: number;
+}
+
+/** Money: a resource like the others (it is in `Ruleset.resources`), but every owned province earns it. */
+export interface EconomyRules {
+  /** The resource that is money. It must be listed in `Ruleset.resources`. */
+  currency: ResourceId;
+  /** Money earned per tick by each owned land province, before the morale factor. */
+  incomePerProvince: number;
+}
+
+/** Talking and dealing between players. */
+export interface ChatRules {
+  /** Messages kept per chat. When it is full the oldest ones are dropped. */
+  maxMessages: number;
+  /** Longest text of a message, in characters. */
+  maxTextLength: number;
+  /** Most trade offers a player can have open at once. */
+  maxOpenTrades: number;
+}
+
+export interface MarketRules {
+  /** Most open orders a player can have on the market at once. */
+  maxOrders: number;
+  /** Ticks an order stays open. When it runs out, what is left of it goes back to its owner. */
+  orderTicks: number;
+  /**
+   * Smallest amount of the offered resource an order can have. A leftover below it (after a
+   * partial trade) is not kept on the book: it goes back to its owner.
+   */
+  minAmount: number;
 }
 
 export interface Ruleset {
@@ -181,6 +216,12 @@ export interface Ruleset {
   vision: VisionRules;
   /** Spies. Omit to play without espionage (the orders then fail with `espionage_unavailable`). */
   espionage?: EspionageRules;
+  /** Resource market between players. Omit to play without it (the orders then fail with `market_unavailable`). */
+  market?: MarketRules;
+  /** Money. Omit to play without a currency (no income; resources are only bartered). */
+  economy?: EconomyRules;
+  /** Chat limits. Omit for the defaults (see `chatRules()`). */
+  chat?: ChatRules;
 }
 
 // ---------------------------------------------------------------------------
@@ -294,6 +335,64 @@ export interface Proposal {
   expiresAt: number;
 }
 
+/** Things that change hands in a deal: resources (money included) and whole provinces. */
+export interface Bundle {
+  resources: Record<ResourceId, number>;
+  provinces: ProvinceId[];
+}
+
+/**
+ * A deal offered to one player: `from` hands over `give` and asks `to` for `want`. Nothing is held
+ * back while the offer is open: everything is checked again when it is accepted.
+ */
+export interface Trade {
+  id: string;
+  from: PlayerId;
+  to: PlayerId;
+  give: Bundle;
+  want: Bundle;
+  /** The offer is withdrawn at this tick. */
+  expiresAt: number;
+}
+
+export type OfferStatus = 'open' | 'accepted' | 'rejected' | 'expired' | 'cancelled';
+
+/** What a chat message holds. Offers are cards in the conversation: their status follows the offer. */
+export type ChatContent =
+  | { kind: 'text'; text: string }
+  | { kind: 'treaty'; proposalId: string; treaty: TreatyKind; status: OfferStatus }
+  | { kind: 'trade'; tradeId: string; give: Bundle; want: Bundle; status: OfferStatus }
+  /** A gift: already delivered, nothing to answer. */
+  | { kind: 'gift'; give: Bundle }
+  /** Told by the game itself (`from` is null), except `war_declared`, which the declaring player "says". */
+  | { kind: 'notice'; notice: 'war_declared' | 'war_started' | 'truce_expired'; warAt?: number };
+
+export interface ChatMessage {
+  id: string;
+  tick: number;
+  /** The sender, or null for a notice of the game. */
+  from: PlayerId | null;
+  content: ChatContent;
+  /**
+   * Players whose spies read this message. Never shown to the people in the chat: `viewFor` removes
+   * it from their own chats.
+   */
+  interceptedBy?: PlayerId[];
+}
+
+/**
+ * A conversation. Today every chat is `direct` (exactly two players, created when they first talk);
+ * `group` chats (alliances, coalitions) use the same shape with more participants.
+ */
+export interface Chat {
+  id: string;
+  kind: 'direct' | 'group';
+  /** Sorted player ids. */
+  participants: PlayerId[];
+  /** Oldest first. */
+  messages: ChatMessage[];
+}
+
 /** What a spy in place is busy with. A spy with no mission only watches. */
 export type SpyMission =
   | { kind: 'sabotage'; buildingType: BuildingId; ticksLeft: number }
@@ -312,6 +411,27 @@ export interface Spy {
   /** Ticks before the cover is blown. Only counts down once the spy is in place. */
   coverLeft: number;
   mission: SpyMission | null;
+}
+
+/** An amount of one resource. */
+export interface MarketAmount {
+  resource: ResourceId;
+  amount: number;
+}
+
+/**
+ * An offer on the market: the owner gives `give` and wants `want` in return. What is offered is
+ * taken out of the owner's stockpile when the order is placed and held here until it is traded,
+ * cancelled or expired. Both amounts are what is LEFT: a partial trade shrinks them in the same
+ * proportion, so the price (`want.amount / give.amount`) never changes while an order is open.
+ */
+export interface MarketOrder {
+  id: string;
+  owner: PlayerId;
+  give: MarketAmount;
+  want: MarketAmount;
+  /** The order expires at this tick. */
+  expiresAt: number;
 }
 
 /** Why a spy is gone. */
@@ -392,6 +512,21 @@ export type GameEvent =
     }
   /** The mission of a spy came to nothing (the building was already gone). The spy goes on watching. */
   | { tick: number; type: 'spy_mission_failed'; spyId: string; owner: PlayerId; provinceId: ProvinceId }
+  /**
+   * A trade on the market, told to the owner of one of the two orders (each side gets its own
+   * event): they gave `gave` and got `got`. `filled` is true when the order is complete.
+   */
+  | { tick: number; type: 'market_trade'; orderId: string; owner: PlayerId; gave: MarketAmount; got: MarketAmount; filled: boolean }
+  /** An order ran out of time: `refund` (what was left of the offer) is back in the owner's stockpile. */
+  | { tick: number; type: 'market_order_expired'; orderId: string; owner: PlayerId; refund: MarketAmount }
+  /** A trade offer was made, answered, withdrawn or ran out. Private to the two players. */
+  | { tick: number; type: 'trade_offered' | 'trade_accepted' | 'trade_rejected' | 'trade_cancelled' | 'trade_expired'; tradeId: string; from: PlayerId; to: PlayerId }
+  /** `from` gave `give` to `to`. Private to the two players. */
+  | { tick: number; type: 'gift_sent'; from: PlayerId; to: PlayerId; give: Bundle }
+  /** A province changed owner by agreement (a gift or a trade), not by force. Public. */
+  | { tick: number; type: 'province_transferred'; provinceId: ProvinceId; from: PlayerId; to: PlayerId }
+  /** A spy of `owner` read a message of a chat between `participants`. Only `owner` hears about it. */
+  | { tick: number; type: 'chat_intercepted'; owner: PlayerId; chatId: string; messageId: string; participants: PlayerId[] }
   | { tick: number; type: 'army_destroyed'; armyId: ArmyId; provinceId: ProvinceId }
   | {
       tick: number;
@@ -420,7 +555,13 @@ export interface GameState {
   proposals: Proposal[];
   /** Spies in foreign provinces (travelling or in place), in the order they were sent. */
   spies: Spy[];
-  /** Counter used to generate deterministic ids (jobs, new armies, proposals, spies). */
+  /** Open orders on the market, in the order they were placed (older first). */
+  market: MarketOrder[];
+  /** Trade offers between two players waiting for an answer, in the order they were made. */
+  trades: Trade[];
+  /** Conversations between players (private: see `viewFor`), in the order they started. */
+  chats: Chat[];
+  /** Counter used to generate deterministic ids (jobs, new armies, proposals, spies, market orders). */
   nextId: number;
   /** Players with no provinces, armies or recruit batches left. Never shrinks. */
   eliminated: PlayerId[];

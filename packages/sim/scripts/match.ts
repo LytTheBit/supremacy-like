@@ -54,6 +54,16 @@ function describe(event: GameEvent): string | null {
     case 'proposal_accepted':
     case 'proposal_rejected':
     case 'proposal_expired':
+    case 'trade_offered':
+    case 'trade_accepted':
+    case 'trade_rejected':
+    case 'trade_cancelled':
+    case 'trade_expired':
+    case 'gift_sent':
+    case 'chat_intercepted':
+      return null; // too noisy
+    case 'province_transferred':
+      return `${event.provinceId} passes from ${event.from} to ${event.to}`;
     case 'war_declared':
       return null; // too noisy
     case 'relation_changed':
@@ -67,6 +77,9 @@ function describe(event: GameEvent): string | null {
       return `${event.buildingType} sabotaged at ${event.provinceId}`;
     case 'morale_sabotaged':
       return `morale at ${event.provinceId} lowered by ${event.damage}`;
+    case 'market_trade':
+    case 'market_order_expired':
+      return null; // too noisy
   }
 }
 

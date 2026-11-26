@@ -76,6 +76,18 @@ function describe(event: GameEvent): string {
       return `${event.to} rejects the ${event.kind} offered by ${event.from}`;
     case 'proposal_expired':
       return `the ${event.kind} offered by ${event.from} to ${event.to} expired`;
+    case 'trade_offered':
+    case 'trade_accepted':
+    case 'trade_rejected':
+    case 'trade_cancelled':
+    case 'trade_expired':
+      return `${event.type} ${event.tradeId} (${event.from} -> ${event.to})`;
+    case 'gift_sent':
+      return `${event.from} gives a gift to ${event.to}`;
+    case 'province_transferred':
+      return `${event.provinceId} passes from ${event.from} to ${event.to}`;
+    case 'chat_intercepted':
+      return `${event.owner} intercepts a message of ${event.participants.join(' and ')}`;
     case 'war_declared':
       return `${event.from} declares war on ${event.to} (starts at tick ${event.warAt})`;
     case 'relation_changed':
@@ -90,6 +102,10 @@ function describe(event: GameEvent): string {
       return `${event.buildingType} sabotaged at ${event.provinceId}`;
     case 'morale_sabotaged':
       return `morale at ${event.provinceId} lowered by ${event.damage}`;
+    case 'market_trade':
+      return `${event.owner} traded ${Math.round(event.gave.amount)} ${event.gave.resource} for ${Math.round(event.got.amount)} ${event.got.resource}`;
+    case 'market_order_expired':
+      return `${event.owner}'s market offer ${event.orderId} expired`;
   }
 }
 

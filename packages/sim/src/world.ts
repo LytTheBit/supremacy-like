@@ -72,6 +72,22 @@ export function createGame(setup: GameSetup): GameState {
   if (!(Number.isInteger(diplomacy.proposalTicks) && diplomacy.proposalTicks > 0)) {
     throw new Error('diplomacy.proposalTicks must be a positive integer');
   }
+  if (rules.market) {
+    const { maxOrders, orderTicks, minAmount } = rules.market;
+    if (!(Number.isInteger(maxOrders) && maxOrders > 0)) throw new Error('market.maxOrders must be a positive integer');
+    if (!(Number.isInteger(orderTicks) && orderTicks > 0)) throw new Error('market.orderTicks must be a positive integer');
+    if (!(minAmount >= 0)) throw new Error('market.minAmount must not be negative');
+  }
+  if (rules.economy) {
+    if (!rules.resources.includes(rules.economy.currency)) throw new Error('economy.currency must be one of the resources');
+    if (!(rules.economy.incomePerProvince >= 0)) throw new Error('economy.incomePerProvince must not be negative');
+  }
+  if (rules.chat) {
+    const { maxMessages, maxTextLength, maxOpenTrades } = rules.chat;
+    if (!(Number.isInteger(maxMessages) && maxMessages > 0)) throw new Error('chat.maxMessages must be a positive integer');
+    if (!(Number.isInteger(maxTextLength) && maxTextLength > 0)) throw new Error('chat.maxTextLength must be a positive integer');
+    if (!(Number.isInteger(maxOpenTrades) && maxOpenTrades > 0)) throw new Error('chat.maxOpenTrades must be a positive integer');
+  }
   const { vision } = rules;
   if (!(vision.provinceRadius >= 0)) throw new Error('vision.provinceRadius must not be negative');
   if (!(vision.unitRadius >= 0)) throw new Error('vision.unitRadius must not be negative');
@@ -216,6 +232,9 @@ export function createGame(setup: GameSetup): GameState {
     relations,
     proposals: [],
     spies: [],
+    market: [],
+    trades: [],
+    chats: [],
     nextId: 1,
     eliminated: [],
     outcome: null,

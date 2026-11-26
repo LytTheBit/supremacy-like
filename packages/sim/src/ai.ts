@@ -2,6 +2,8 @@ import { previewBattle, sumUnits, totalCount } from './combat';
 import { areHostile, hasPendingProposal, orderPropose, orderRespond, proposalsFor, relationBetween } from './diplomacy';
 import { canRecruitAt } from './morale';
 import { canSpyOn, isSpyInPlace, orderSpy, orderSpyMission } from './espionage';
+import { orderMarketAccept, orderMarketOffer } from './market';
+import { orderRespondTrade, tradesFor } from './trade';
 import { visibleProvinces } from './visibility';
 import { orderBuild, orderEmbark, orderMove, orderRecruit } from './orders';
 import { buildAdjacency, findPath } from './pathfinding';
@@ -25,6 +27,7 @@ import type {
   BuildingDef,
   BuildingId,
   GameState,
+  MarketOrder,
   PlayerId,
   Province,
   ProvinceId,
@@ -65,6 +68,11 @@ import type {
  *      closest to its own land (only players it is at war with). A spy in place sabotages the most
  *      expensive building of its province, or else lowers the morale, if the cover lasts long enough
  *      to finish. Against truce partners spies only watch.
+ *   7. market: every `marketInterval` ticks it looks at its stockpile. A resource far above the
+ *      average is a surplus, one far below it is a shortage. It first takes an open offer that
+ *      gives the shortage for the surplus at a fair rate (`marketAcceptRate`); else it offers part
+ *      of the surplus for the shortage at `marketAskRate`. It plays this phase last, so it only
+ *      trades what is left after building and recruiting; what it gets is spent on the next turn.
  */
 
 export interface AiOptions {
@@ -105,6 +113,22 @@ export interface AiOptions {
   spyReserve: number;
   /** Disinformation is only worth it in provinces with at least this morale. */
   minMoraleToHarm: number;
+  /** Use the market (needs `rules.market`). */
+  market: boolean;
+  /** The AI visits the market every N ticks. */
+  marketInterval: number;
+  /** A resource is a surplus when the AI holds more than the average stock of all resources times this. */
+  marketSurplusRatio: number;
+  /** A resource is a shortage when the AI holds less than the average stock times this. */
+  marketShortageRatio: number;
+  /** The AI takes an offer only if it gets at least this much per unit it gives (1 = an even swap). */
+  marketAcceptRate: number;
+  /** The offers the AI makes ask this much per unit it gives (1 = an even swap). */
+  marketAskRate: number;
+  /** The AI accepts a trade when what it gets is worth at least this times what it gives (all resources, money included, count the same). */
+  tradeAcceptRatio: number;
+  /** What a province is worth in that count, for the provinces it would receive. It never gives provinces away. */
+  provinceValue: number;
 }
 
 export const defaultAiOptions: AiOptions = {
@@ -129,6 +153,14 @@ export const defaultAiOptions: AiOptions = {
   spyInterval: 5,
   spyReserve: 8000,
   minMoraleToHarm: 50,
+  market: true,
+  marketInterval: 5,
+  marketSurplusRatio: 1.4,
+  marketShortageRatio: 0.6,
+  marketAcceptRate: 0.75,
+  marketAskRate: 1,
+  tradeAcceptRatio: 1,
+  provinceValue: 10000,
 };
 
 /** Plays one turn for a player and returns the new state. Pure function. */
@@ -149,6 +181,7 @@ export function runAi(
   current = airPhase(current, rules, playerId, opts);
   current = navyPhase(current, rules, playerId, opts);
   current = spyPhase(current, rules, playerId, opts);
+  current = marketPhase(current, rules, playerId, opts);
   return current;
 }
 
@@ -191,6 +224,23 @@ function diplomacyPhase(state: GameState, rules: Ruleset, playerId: PlayerId, op
     if (result.ok) current = result.state;
   }
 
+  // 1b. Trade offers: a fair deal with somebody it is not at war with. It never gives provinces away.
+  for (const trade of tradesFor(current, playerId)) {
+    const worth = (bundle: { resources: Record<string, number>; provinces: string[] }, provinces: number) =>
+      Object.values(bundle.resources).reduce((sum, amount) => sum + amount, 0) + bundle.provinces.length * provinces;
+    const gets = worth(trade.give, opts.provinceValue);
+    const gives = worth(trade.want, opts.provinceValue);
+    const fair = trade.want.provinces.length === 0 && gets >= gives * opts.tradeAcceptRatio;
+    const accept = fair && relationBetween(current, playerId, trade.from) !== 'war';
+    const result = orderRespondTrade(current, rules, playerId, trade.id, accept);
+    if (result.ok) current = result.state;
+    else {
+      // It could not keep its side of the deal (or the other side could not): the offer is turned down.
+      const refusal = orderRespondTrade(current, rules, playerId, trade.id, false);
+      if (refusal.ok) current = refusal.state;
+    }
+  }
+
   // 2. Now and then, reach out.
   if (current.tick % Math.max(1, opts.diplomacyInterval) !== 0) return current;
 
@@ -212,6 +262,56 @@ function diplomacyPhase(state: GameState, rules: Ruleset, playerId: PlayerId, op
     }
   }
   return current;
+}
+
+// ---------------------------------------------------------------------------
+// Market
+// ---------------------------------------------------------------------------
+
+/**
+ * Swaps what the AI has too much of for what it lacks. It never gives away more than half of what
+ * is above its average stock in one go, and it only takes offers that are fair to it.
+ */
+function marketPhase(state: GameState, rules: Ruleset, playerId: PlayerId, opts: AiOptions): GameState {
+  const market = rules.market;
+  if (!opts.market || !market || state.tick % Math.max(1, opts.marketInterval) !== 0) return state;
+  const player = state.players.find((p) => p.id === playerId);
+  if (!player || rules.resources.length < 2) return state;
+
+  const stock = (resource: ResourceId) => player.stockpile[resource] ?? 0;
+  const average = rules.resources.reduce((sum, r) => sum + stock(r), 0) / rules.resources.length;
+  if (average <= 0) return state;
+
+  const surplus = rules.resources
+    .filter((r) => stock(r) > average * opts.marketSurplusRatio)
+    .sort((x, y) => stock(y) - stock(x) || x.localeCompare(y))[0];
+  const shortage = rules.resources
+    .filter((r) => stock(r) < average * opts.marketShortageRatio)
+    .sort((x, y) => stock(x) - stock(y) || x.localeCompare(y))[0];
+  if (surplus === undefined || shortage === undefined) return state;
+
+  const spare = (stock(surplus) - average) / 2;
+  if (spare < market.minAmount) return state;
+
+  // 1. An open offer of somebody else that gives what we lack for what we can spare, at a fair rate.
+  let best: MarketOrder | null = null;
+  for (const order of state.market) {
+    if (order.owner === playerId || order.give.resource !== shortage || order.want.resource !== surplus) continue;
+    if (order.want.amount > spare) continue;
+    const rate = order.give.amount / order.want.amount;
+    if (rate < opts.marketAcceptRate) continue;
+    if (!best || rate > best.give.amount / best.want.amount) best = order;
+  }
+  if (best) {
+    const result = orderMarketAccept(state, rules, playerId, best.id);
+    return result.ok ? result.state : state;
+  }
+
+  // 2. Else offer some of the surplus (one open offer of a kind is enough).
+  if (state.market.some((o) => o.owner === playerId && o.give.resource === surplus && o.want.resource === shortage)) return state;
+  const amount = Math.floor(spare);
+  const result = orderMarketOffer(state, rules, playerId, surplus, amount, shortage, amount * opts.marketAskRate);
+  return result.ok ? result.state : state;
 }
 
 // ---------------------------------------------------------------------------

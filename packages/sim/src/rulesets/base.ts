@@ -10,7 +10,7 @@ export const baseRuleset: Ruleset = {
   id: 'base',
   era: 'ww1',
   medals: [],
-  resources: ['wood', 'iron', 'grain', 'coal'],
+  resources: ['money', 'wood', 'iron', 'grain', 'coal'],
   units: {
     infantry: {
       name: 'Infantry',
@@ -179,5 +179,17 @@ export const baseRuleset: Ruleset = {
     coverTicks: 30,
     sabotage: { ticks: 4 },
     disinformation: { ticks: 3, moraleDamage: 30 },
+    chatContext: 6, // messages before the spy arrived that it also reads
+  },
+  // Money: every owned land province earns it, scaled by its morale. Nothing costs money yet: it is traded,
+  // gifted and bartered; add `money` to a cost (unit, building, spy) to make it a sink.
+  economy: { currency: 'money', incomePerProvince: 1000 },
+  // Talking between players.
+  chat: { maxMessages: 200, maxTextLength: 400, maxOpenTrades: 3 },
+  // Market: placeholders to be balanced. Amounts are in the same thousands as everything else.
+  market: {
+    maxOrders: 5,
+    orderTicks: 40,
+    minAmount: 500,
   },
 };

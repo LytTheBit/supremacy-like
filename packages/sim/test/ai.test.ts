@@ -33,7 +33,7 @@ const blueGuard: ArmySetup = { id: 'b-guard', owner: 'blue', location: 'bcap', u
 describe('AI recruiting', () => {
   it('spends its resources on infantry in an owned province near the front', () => {
     const state = withStockpile(duelGame([blueGuard]), 'red', { grain: 40000, iron: 4000 });
-    const next = runAi(state, rules, 'red');
+    const next = runAi(state, rules, 'red', { market: false }); // the leftover grain would otherwise go to the market
 
     expect(next.recruitQueue).toHaveLength(1);
     const job = next.recruitQueue[0];

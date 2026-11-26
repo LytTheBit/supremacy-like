@@ -1,7 +1,10 @@
 import { bombardPower, resolveRound, scaleUnits, shellingSurvival, sumUnits, totalCount } from './combat';
 import { areHostile, processDiplomacy } from './diplomacy';
+import { provinceMoneyIncome } from './economy';
+import { processTrades } from './trade';
 import { processEspionage } from './espionage';
 import { productionMultiplier } from './buildings';
+import { processMarket } from './market';
 import { MAX_MORALE, moraleProductionFactor } from './morale';
 import { buildAdjacency, makeEdgeDistance } from './pathfinding';
 import {
@@ -39,6 +42,8 @@ import type { Army, ArmyId, GameState, PlayerId, ProvinceId, Ruleset, Units } fr
  *   7. merging    - idle armies of the same owner in the same province combine
  *   8. production - owned provinces add resources (scaled by buildings and morale)
  *   9. victory    - eliminations and win conditions are checked
+ *  10. market     - open orders that ran out of time are closed and what is left of them comes back
+ *                  (after the victory check, so the orders of a player just eliminated are dropped at once)
  *
  * Once the game has an outcome, tick() returns an unchanged copy of the state (without events).
  */
@@ -53,7 +58,8 @@ export function tick(state: GameState, rules: Ruleset): GameState {
   if (next.outcome) return next;
   next.tick += 1;
 
-  processDiplomacy(next);
+  processDiplomacy(next, rules);
+  processTrades(next);
   moveArmies(next, rules);
   resolveCombat(next, rules);
   bombardCoasts(next, rules);
@@ -66,6 +72,7 @@ export function tick(state: GameState, rules: Ruleset): GameState {
   mergeIdleArmies(next, rules);
   produceResources(next, rules);
   checkVictory(next, rules);
+  processMarket(next);
 
   return next;
 }
@@ -344,6 +351,9 @@ function produceResources(state: GameState, rules: Ruleset): void {
     const produced =
       province.production * productionMultiplier(rules, province) * moraleProductionFactor(rules, province);
     player.stockpile[province.resource] = (player.stockpile[province.resource] ?? 0) + produced;
+    // Money: every owned land province earns it, whatever it grows.
+    const currency = rules.economy?.currency;
+    if (currency !== undefined) player.stockpile[currency] = (player.stockpile[currency] ?? 0) + provinceMoneyIncome(rules, province);
   }
 }
 
