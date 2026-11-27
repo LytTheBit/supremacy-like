@@ -212,8 +212,14 @@ describe('toMapDef', () => {
   it('links provinces that share a border, with distances from their centers', () => {
     const def = toMapDef(twoProvinces(), { distancePerHex: 1, minDistance: 0.1 });
     // Centers are 2 hexes apart.
-    expect(def.edges).toEqual([{ a: 'A', b: 'B', distance: 2 }]);
+    expect(def.edges).toEqual([{ a: 'A', b: 'B', distance: 2, split: 0.5 }]);
     expect(def.provinces.map((p) => p.id)).toEqual(['A', 'B']);
+  });
+
+  it('puts the border of the road where the provinces meet, so a big province owns more of it', () => {
+    // A is three hexes long, B one: the centers are 2 apart and the border is 0.5 from B's center.
+    const def = toMapDef(handMap({ A: [[0, 0], [1, 0], [2, 0]], B: [[3, 0]] }), { distancePerHex: 1, minDistance: 0.1 });
+    expect(def.edges).toEqual([{ a: 'A', b: 'B', distance: 2, split: 0.75 }]);
   });
 
   it('never goes below the minimum distance', () => {

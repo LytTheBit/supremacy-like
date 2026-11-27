@@ -1,9 +1,9 @@
 import { bombardPower, resolveRound, scaleUnits, shellingSurvival, sumUnits, totalCount } from './combat';
-import { areHostile, processDiplomacy } from './diplomacy';
+import { areAllied, areHostile, processDiplomacy } from './diplomacy';
 import { provinceMoneyIncome } from './economy';
 import { processTrades } from './trade';
 import { processEspionage } from './espionage';
-import { productionMultiplier } from './buildings';
+import { buildingLevel, damageReduction, productionMultiplier, setBuildingLevel } from './buildings';
 import { processMarket } from './market';
 import { MAX_MORALE, moraleProductionFactor } from './morale';
 import { buildAdjacency, makeEdgeDistance } from './pathfinding';
@@ -19,6 +19,7 @@ import {
   isSeaProvince,
   landTroops,
   makeStepRule,
+  railBonus,
   splitByDomain,
 } from './naval';
 import { freshArmyId } from './world';
@@ -67,7 +68,7 @@ export function tick(state: GameState, rules: Ruleset): GameState {
   recoverMorale(next, rules);
   resolveConquest(next, rules);
   processTraining(next, rules);
-  processConstruction(next);
+  processConstruction(next, rules);
   processEspionage(next, rules);
   mergeIdleArmies(next, rules);
   produceResources(next, rules);
@@ -102,8 +103,29 @@ function hasHostileAt(state: GameState, owner: PlayerId, location: ProvinceId): 
   return state.armies.some((a) => a.location === location && areHostile(state, owner, a.owner));
 }
 
+/** A tiny slack so that float noise does not push an arrival to the next tick. */
+const TIME_EPSILON = 1e-9;
+
+/**
+ * Moves every army with an order along its path, one tick of time per call.
+ *
+ * `order.progress` is how far the army is along the road to the next province of its path (0 right after
+ * it left a province). A tick is 1 unit of time, spent walking: the army covers `speed * bonus` of road
+ * per unit of time, where the bonus depends on the province it is inside at that point of the road.
+ * The border between the two provinces lies at the edge's `split`; before it the army is in the province
+ * it left, after it in the one it is entering. The railway of that province (if the owner or an ally
+ * may use it) speeds land troops up. The bonus is looked up again at every tick, so a railway built or
+ * lost during a long march changes the rest of the march at once.
+ */
 function moveArmies(state: GameState, rules: Ruleset): void {
   const edgeDistance = makeEdgeDistance(state.edges);
+  const provinceById = new Map(state.provinces.map((p) => [p.id, p]));
+  const edgeSplit = new Map<string, number>();
+  for (const edge of state.edges) {
+    const split = edge.split ?? 0.5;
+    edgeSplit.set(`${edge.a}|${edge.b}`, split);
+    edgeSplit.set(`${edge.b}|${edge.a}`, 1 - split);
+  }
 
   for (const army of sortedById(state.armies)) {
     const order = army.order;
@@ -116,9 +138,10 @@ function moveArmies(state: GameState, rules: Ruleset): void {
     if (speed <= 0) continue;
 
     const step = makeStepRule(state, rules, army);
-    order.progress += speed;
+    const onLand = !hasNavalUnits(rules, army.units) && !hasAirUnits(rules, army.units);
+    let time = 1;
 
-    while (order.path.length > 0) {
+    while (order.path.length > 0 && time > TIME_EPSILON) {
       const nextProvince = order.path[0];
       if (nextProvince === undefined) break;
       const distance = edgeDistance(army.location, nextProvince);
@@ -127,9 +150,24 @@ function moveArmies(state: GameState, rules: Ruleset): void {
         army.order = null;
         break;
       }
-      if (order.progress < distance) break;
 
-      order.progress -= distance;
+      // Which province is the army inside right now, and how fast is it there?
+      const border = distance * (edgeSplit.get(`${army.location}|${nextProvince}`) ?? 0.5);
+      const inFirstHalf = order.progress < border - TIME_EPSILON;
+      const inside = provinceById.get(inFirstHalf ? army.location : nextProvince);
+      const rate = speed * (onLand && inside ? railBonus(state, rules, army.owner, inside) : 1);
+      const segmentEnd = inFirstHalf ? border : distance;
+
+      const needed = (segmentEnd - order.progress) / rate;
+      if (needed > time + TIME_EPSILON) {
+        order.progress += rate * time;
+        break;
+      }
+      time = Math.max(0, time - needed);
+      order.progress = segmentEnd;
+      if (inFirstHalf) continue; // across the border: the rest of the road is in the next province
+
+      order.progress = 0;
       const from = army.location;
       army.location = nextProvince;
       order.path.shift();
@@ -200,7 +238,16 @@ function bombardCoasts(state: GameState, rules: Ruleset): void {
     const defenders = state.armies.filter(
       (a) => a.location === target.id && areHostile(state, fleet.owner, a.owner) && !destroyed.has(a.id),
     );
-    const survival = shellingSurvival(rules, power, sumUnits(defenders.map((a) => a.units)));
+    // A fortress stops part of the shells that fall on its owner's troops.
+    const targetProvince = provinces.get(target.id);
+    const protectedByFortress =
+      targetProvince?.owner != null && areHostile(state, fleet.owner, targetProvince.owner);
+    const survival = shellingSurvival(
+      rules,
+      power,
+      sumUnits(defenders.map((a) => a.units)),
+      targetProvince && protectedByFortress ? 1 - damageReduction(rules, targetProvince) : 1,
+    );
     state.events.push({ tick: state.tick, type: 'coast_bombarded', armyId: fleet.id, provinceId: target.id });
     if (survival >= 1) continue;
     for (const army of defenders) {
@@ -270,10 +317,17 @@ function resolveCombat(state: GameState, rules: Ruleset): void {
 
     // At sea only the ships fight; the cargo shares their fate through the survival factor.
     const atSea = state.provinces.some((p) => p.id === provinceId && isSeaProvince(p));
+    // The troops of the owner of the province (and of its allies) fight behind its fortress.
+    const here = state.provinces.find((p) => p.id === provinceId);
+    const shield = here && here.owner !== null ? 1 - damageReduction(rules, here) : 1;
+    const damageTaken = owners.map((owner) =>
+      here && here.owner !== null && !atSea && (owner === here.owner || areAllied(state, owner, here.owner)) ? shield : 1,
+    );
     const survival = resolveRound(
       rules,
       sides.map((group) => combatUnits(rules, sumUnits(group.map((a) => a.units)), atSea)),
       hostile,
+      damageTaken,
     );
 
     // Only the owners that actually fight someone are named in the battle.
@@ -453,7 +507,7 @@ function mergeIdleArmies(state: GameState, rules: Ruleset): void {
  * - If the province changed hands before completion, the construction is lost (no refund).
  * - Completed buildings stay in the province, even if it is conquered later.
  */
-function processConstruction(state: GameState): void {
+function processConstruction(state: GameState, rules: Ruleset): void {
   const remaining: GameState['constructionQueue'] = [];
 
   for (const job of state.constructionQueue) {
@@ -475,12 +529,16 @@ function processConstruction(state: GameState): void {
       continue;
     }
 
+    // A new building appears at level 1; an upgrade raises the level of the one that stands there.
+    const level = job.level ?? 1;
     if (!province.buildings.includes(job.buildingType)) province.buildings.push(job.buildingType);
+    if (level > buildingLevel(province, job.buildingType)) setBuildingLevel(province, job.buildingType, level);
     state.events.push({
       tick: state.tick,
       type: 'building_completed',
       provinceId: job.provinceId,
       buildingType: job.buildingType,
+      level: buildingLevel(province, job.buildingType),
     });
   }
 

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { baseRuleset, createGame, duelMap, runAi, runMatch, tick, type GameState, type Units } from '../src';
 
+import { withOffices } from './helpers';
+
 const rules = baseRuleset;
 
 const players = [
@@ -16,7 +18,7 @@ const owners = {
 type ArmySetup = { id: string; owner: string; location: string; units: Units };
 
 function duelGame(armies: ArmySetup[], buildings: { provinceId: string; type: string }[] = []): GameState {
-  return createGame({ map: duelMap, rules, players, owners, armies, buildings });
+  return withOffices(createGame({ map: duelMap, rules, players, owners, armies, buildings }));
 }
 
 function withStockpile(state: GameState, playerId: string, stock: Record<string, number>): GameState {

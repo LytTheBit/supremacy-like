@@ -1,4 +1,10 @@
-import { effectiveTrainingTicks } from './buildings';
+import {
+  buildingLevel,
+  buildingStep,
+  effectiveTrainingTicks,
+  missingBuildingRequirement,
+  missingUnitRequirement,
+} from './buildings';
 import { areHostile } from './diplomacy';
 import { canRecruitAt } from './morale';
 import {
@@ -102,9 +108,7 @@ export function orderRecruit(
 
   const def = rules.units[unitType];
   if (!def) return { ok: false, error: 'unknown_unit_type' };
-  if (def.requires !== undefined && !province.buildings.includes(def.requires)) {
-    return { ok: false, error: 'missing_building' };
-  }
+  if (missingUnitRequirement(province, def) !== null) return { ok: false, error: 'missing_building' };
   if (!Number.isInteger(count) || count <= 0) return { ok: false, error: 'invalid_count' };
 
   if (state.armies.some((a) => a.location === provinceId && areHostile(state, playerId, a.owner))) {
@@ -145,6 +149,7 @@ export type BuildError =
   | 'unknown_building'
   | 'already_built'
   | 'already_building'
+  | 'missing_prerequisite'
   | 'not_coastal'
   | 'enemy_present'
   | 'insufficient_resources';
@@ -156,7 +161,9 @@ export type BuildResult =
 /**
  * Orders the construction of a building in a province owned by the player.
  * The full cost is paid immediately. A province holds at most one building of each
- * type, and only one construction of a type at a time.
+ * type, and only one construction of a type at a time. Ordering a building that already stands
+ * there upgrades it to the next level (`already_built` once it is at its top level). The buildings it
+ * depends on must already stand in the province at the level the step needs.
  * Pure function: the input state is never modified.
  */
 export function orderBuild(
@@ -178,15 +185,19 @@ export function orderBuild(
   const def = rules.buildings[buildingType];
   if (!def) return { ok: false, error: 'unknown_building' };
   if (def.coastal && !isCoastal(state, provinceId)) return { ok: false, error: 'not_coastal' };
-  if (province.buildings.includes(buildingType)) return { ok: false, error: 'already_built' };
+  // The next level: 1 for a new building, else one more than it has now.
+  const level = buildingLevel(province, buildingType) + 1;
+  const step = buildingStep(def, level);
+  if (!step) return { ok: false, error: 'already_built' };
   if (state.constructionQueue.some((j) => j.provinceId === provinceId && j.buildingType === buildingType)) {
     return { ok: false, error: 'already_building' };
   }
+  if (missingBuildingRequirement(province, step.requires) !== null) return { ok: false, error: 'missing_prerequisite' };
   if (state.armies.some((a) => a.location === provinceId && areHostile(state, playerId, a.owner))) {
     return { ok: false, error: 'enemy_present' };
   }
 
-  for (const [resource, amount] of Object.entries(def.cost)) {
+  for (const [resource, amount] of Object.entries(step.cost)) {
     if ((player.stockpile[resource] ?? 0) < amount) return { ok: false, error: 'insufficient_resources' };
   }
 
@@ -194,7 +205,7 @@ export function orderBuild(
   const nextPlayer = next.players.find((p) => p.id === playerId);
   if (!nextPlayer) return { ok: false, error: 'player_not_found' };
 
-  for (const [resource, amount] of Object.entries(def.cost)) {
+  for (const [resource, amount] of Object.entries(step.cost)) {
     nextPlayer.stockpile[resource] = (nextPlayer.stockpile[resource] ?? 0) - amount;
   }
   next.constructionQueue.push({
@@ -202,7 +213,8 @@ export function orderBuild(
     owner: playerId,
     provinceId,
     buildingType,
-    ticksLeft: def.buildTicks,
+    level,
+    ticksLeft: step.buildTicks,
   });
   next.nextId += 1;
   return { ok: true, state: next };

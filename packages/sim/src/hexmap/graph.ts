@@ -84,6 +84,46 @@ export function provinceAnchors(map: HexMapData): Map<ProvinceId, Hex> {
   return anchors;
 }
 
+/**
+ * Where the border between two adjacent provinces lies on the road between their centers: the share of
+ * the road, counted from `a`, that is inside `a`. The border point is the middle of the hex edges the
+ * two provinces share, projected on the road. A pair that does not touch gets 0.5.
+ */
+export function borderSplits(map: HexMapData, centroids: Map<ProvinceId, Point>): Map<string, number> {
+  const index = buildCellIndex(map);
+  const sums = new Map<string, { x: number; y: number; n: number }>();
+  for (const cell of map.cells) {
+    if (cell.province === null) continue;
+    for (const neighbor of hexNeighbors(cell)) {
+      const other = index.get(hexKey(neighbor));
+      if (!other || other.province === null || other.province === cell.province) continue;
+      if (cell.province > other.province) continue; // count each shared hex edge once, from the lower id
+      const p = hexToPixel(cell, 1);
+      const q = hexToPixel(other, 1);
+      const key = `${cell.province}|${other.province}`;
+      const sum = sums.get(key) ?? { x: 0, y: 0, n: 0 };
+      sum.x += (p.x + q.x) / 2 / SQRT3;
+      sum.y += (p.y + q.y) / 2 / SQRT3;
+      sum.n += 1;
+      sums.set(key, sum);
+    }
+  }
+  const result = new Map<string, number>();
+  for (const [key, sum] of sums) {
+    const [a, b] = key.split('|') as [ProvinceId, ProvinceId];
+    const pa = centroids.get(a);
+    const pb = centroids.get(b);
+    if (!pa || !pb) continue;
+    const border = { x: sum.x / sum.n, y: sum.y / sum.n };
+    const toBorder = Math.hypot(border.x - pa.x, border.y - pa.y);
+    const fromBorder = Math.hypot(border.x - pb.x, border.y - pb.y);
+    const total = toBorder + fromBorder;
+    // Keep a little of the road on both sides, so that no province is a single point.
+    if (total > 0) result.set(key, Math.min(0.9, Math.max(0.1, Math.round((toBorder / total) * 100) / 100)));
+  }
+  return result;
+}
+
 export interface ToMapDefOptions {
   /** Travel distance per hex width between province centers. Default 0.25. */
   distancePerHex?: number;
@@ -114,13 +154,15 @@ export function toMapDef(map: HexMapData, options: ToMapDefOptions = {}): MapDef
     return Math.max(minDistance, round1(Math.hypot(pa.x - pb.x, pa.y - pb.y) * scale * factor));
   };
 
+  const splits = borderSplits(map, centroids);
   const edges = new Map<string, Edge>();
-  const addEdge = (a: ProvinceId, b: ProvinceId, distance: number) => {
+  const addEdge = (a: ProvinceId, b: ProvinceId, distance: number, split?: number) => {
     const [x, y] = a < b ? [a, b] : [b, a];
-    edges.set(`${x}|${y}`, { a: x, b: y, distance });
+    // Manual links (sea crossings) have no shared border: they keep the default half and half.
+    edges.set(`${x}|${y}`, { a: x, b: y, distance, ...(split !== undefined ? { split } : {}) });
   };
 
-  for (const [a, b] of adjacentProvincePairs(map)) addEdge(a, b, distanceBetween(a, b, 1));
+  for (const [a, b] of adjacentProvincePairs(map)) addEdge(a, b, distanceBetween(a, b, 1), splits.get(`${a}|${b}`));
   for (const link of map.links) {
     addEdge(link.a, link.b, link.distance ?? distanceBetween(link.a, link.b, linkFactor));
   }

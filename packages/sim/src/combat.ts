@@ -108,10 +108,10 @@ export function bombardPower(rules: Ruleset, units: Units): number {
  * Survival factor (0..1) of a force that is shelled for one tick with the given power. One-sided:
  * same damage formula as a battle round, but the target does not shoot back.
  */
-export function shellingSurvival(rules: Ruleset, power: number, target: Units): number {
+export function shellingSurvival(rules: Ruleset, power: number, target: Units, damageTaken = 1): number {
   const stats = sideStats(rules, target);
   if (power <= 0 || stats.hp <= 0) return 1;
-  const damage = ((power * power) / (power + stats.defense)) * rules.combat.damageScale;
+  const damage = ((power * power) / (power + stats.defense)) * rules.combat.damageScale * damageTaken;
   const survival = Math.max(0, 1 - damage / stats.hp);
   return totalCount(target) * survival < rules.combat.minUnitsAlive ? 0 : survival;
 }
@@ -145,11 +145,15 @@ export function sumUnits(list: Units[]): Units {
  * By default every side fights every other side. `hostile(i, j)` can say which pairs fight
  * (allies stand side by side): a side's damage is split evenly between the sides it fights,
  * and a side nobody fights comes out untouched.
+ *
+ * `damageTaken` scales the damage each side receives (default 1 for everybody): a fortress that stops
+ * 70% of the damage gives its side 0.3.
  */
 export function resolveRound(
   rules: Ruleset,
   sides: Units[],
   hostile: (i: number, j: number) => boolean = () => true,
+  damageTaken: number[] = [],
 ): number[] {
   const stats = sides.map((units) => sideStats(rules, units));
   const enemyCount = stats.map((_, i) => stats.filter((__, j) => j !== i && hostile(i, j)).length);
@@ -167,6 +171,7 @@ export function resolveRound(
       incoming += damage / (enemyCount[j] ?? 1);
     });
 
+    incoming *= damageTaken[i] ?? 1;
     const survival = Math.max(0, 1 - incoming / target.hp);
     const unitsLeft = totalCount(sides[i] ?? {}) * survival;
     return unitsLeft < rules.combat.minUnitsAlive ? 0 : survival;
@@ -194,6 +199,8 @@ export function previewBattle(
   attacker: Units,
   defender: Units,
   maxRounds = 1000,
+  /** Scales the damage the defender receives (a fortress stopping 70% gives 0.3). Default 1. */
+  defenderDamageTaken = 1,
 ): BattlePreview {
   const attackerHp = sideStats(rules, attacker).hp;
   const defenderHp = sideStats(rules, defender).hp;
@@ -210,7 +217,7 @@ export function previewBattle(
       stalemate = true;
       break;
     }
-    const [factorA = 0, factorD = 0] = resolveRound(rules, [a, d]);
+    const [factorA = 0, factorD = 0] = resolveRound(rules, [a, d], () => true, [1, defenderDamageTaken]);
     a = scaleUnits(a, factorA);
     d = scaleUnits(d, factorD);
     rounds += 1;

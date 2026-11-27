@@ -1,8 +1,10 @@
+import { maxBuildingLevel } from './buildings';
 import { totalCount } from './combat';
 import { armyKind, cargoFits, hasAirUnits, hasNavalUnits, isSeaProvince, splitByDomain } from './naval';
 import type {
   Army,
   ArmyId,
+  BuildingDef,
   BuildingId,
   GameState,
   MapDef,
@@ -22,8 +24,8 @@ export interface GameSetup {
   /** Initial owners. Provinces not listed start neutral. */
   owners: Record<ProvinceId, PlayerId>;
   armies: { id: ArmyId; owner: PlayerId; location: ProvinceId; units: Units }[];
-  /** Buildings that already stand at the start of the game. */
-  buildings?: { provinceId: ProvinceId; type: BuildingId }[];
+  /** Buildings that already stand at the start of the game (`level` defaults to 1). */
+  buildings?: { provinceId: ProvinceId; type: BuildingId; level?: number }[];
   /** Starting resources per player. Missing players or resources start at 0. */
   stockpiles?: Record<PlayerId, Record<ResourceId, number>>;
   /** Treaties in force at the start. Pairs that are not listed start at war. */
@@ -102,11 +104,32 @@ export function createGame(setup: GameSetup): GameState {
     }
   }
   for (const [type, def] of Object.entries(rules.buildings)) {
-    for (const resource of Object.keys(def.cost)) {
-      if (!rules.resources.includes(resource)) {
-        throw new Error(`Building ${type} costs unknown resource: ${resource}`);
+    const steps = [def, ...(def.upgrades ?? [])];
+    for (const step of steps) {
+      for (const resource of Object.keys(step.cost)) {
+        if (!rules.resources.includes(resource)) {
+          throw new Error(`Building ${type} costs unknown resource: ${resource}`);
+        }
+      }
+      if (!(step.buildTicks >= 1)) throw new Error(`Building ${type} needs at least 1 build tick per level`);
+      for (const [needed, level] of Object.entries(step.requires ?? {})) {
+        const other = rules.buildings[needed];
+        if (!other) throw new Error(`Building ${type} requires unknown building: ${needed}`);
+        if (needed === type) throw new Error(`Building ${type} cannot require itself`);
+        if (!Number.isInteger(level) || level < 1 || level > maxBuildingLevel(other)) {
+          throw new Error(`Building ${type} requires ${needed} at an impossible level: ${level}`);
+        }
       }
     }
+    if (def.damageReduction !== undefined && !(def.damageReduction >= 0 && def.damageReduction <= 1)) {
+      throw new Error(`Building ${type}: damageReduction must be between 0 and 1`);
+    }
+    if (def.railSpeedFactor !== undefined && !(def.railSpeedFactor >= 1)) {
+      throw new Error(`Building ${type}: railSpeedFactor must be at least 1`);
+    }
+  }
+  for (const id of rules.startingBuildings ?? []) {
+    if (!rules.buildings[id]) throw new Error(`startingBuildings has an unknown building: ${id}`);
   }
   for (const [type, def] of Object.entries(rules.units)) {
     if (def.domain === 'air' && !(def.range !== undefined && def.range > 0)) {
@@ -124,13 +147,21 @@ export function createGame(setup: GameSetup): GameState {
     }
   }
   for (const [type, def] of Object.entries(rules.units)) {
-    if (def.requires !== undefined && !rules.buildings[def.requires]) {
-      throw new Error(`Unit ${type} requires unknown building: ${def.requires}`);
+    for (const [needed, level] of Object.entries(def.requires ?? {})) {
+      const building = rules.buildings[needed];
+      if (!building) throw new Error(`Unit ${type} requires unknown building: ${needed}`);
+      if (!Number.isInteger(level) || level < 1 || level > maxBuildingLevel(building)) {
+        throw new Error(`Unit ${type} requires ${needed} at an impossible level: ${level}`);
+      }
     }
+    if (def.railOnly && (def.domain ?? 'land') !== 'land') throw new Error(`Unit ${type}: only land units can be railOnly`);
   }
   for (const edge of map.edges) {
     if (!provinceIds.has(edge.a) || !provinceIds.has(edge.b)) {
       throw new Error(`Edge ${edge.a}-${edge.b} references an unknown province`);
+    }
+    if (edge.split !== undefined && !(edge.split >= 0 && edge.split <= 1)) {
+      throw new Error(`Edge ${edge.a}-${edge.b} must have a split between 0 and 1`);
     }
     if (edge.distance <= 0) {
       throw new Error(`Edge ${edge.a}-${edge.b} must have a positive distance`);
@@ -175,6 +206,7 @@ export function createGame(setup: GameSetup): GameState {
   });
 
   const startingBuildings = new Map<ProvinceId, BuildingId[]>();
+  const startingLevels = new Map<ProvinceId, Record<BuildingId, number>>();
   for (const building of setup.buildings ?? []) {
     if (!provinceIds.has(building.provinceId)) {
       throw new Error(`Building ${building.type} is placed in unknown province: ${building.provinceId}`);
@@ -187,6 +219,11 @@ export function createGame(setup: GameSetup): GameState {
     }
     list.push(building.type);
     startingBuildings.set(building.provinceId, list);
+    const level = building.level ?? 1;
+    if (!Number.isInteger(level) || level < 1 || level > maxBuildingLevel(rules.buildings[building.type] as BuildingDef)) {
+      throw new Error(`Building ${building.type} cannot start at level ${level}`);
+    }
+    if (level > 1) startingLevels.set(building.provinceId, { ...startingLevels.get(building.provinceId), [building.type]: level });
   }
 
   for (const [playerId, stock] of Object.entries(setup.stockpiles ?? {})) {
@@ -223,6 +260,7 @@ export function createGame(setup: GameSetup): GameState {
       ...p,
       owner: setup.owners[p.id] ?? null,
       buildings: [...(startingBuildings.get(p.id) ?? [])],
+      ...(startingLevels.has(p.id) ? { buildingLevels: { ...startingLevels.get(p.id) } } : {}),
       morale: rules.morale.start,
     })),
     edges: map.edges.map((e) => ({ ...e })),

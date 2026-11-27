@@ -11,6 +11,8 @@ import {
   type ResourceId,
 } from '../src';
 
+import { withOffices } from './helpers';
+
 const rules = baseRuleset;
 
 const players = [
@@ -24,7 +26,7 @@ function withStockpile(state: GameState, playerId: PlayerId, stock: Record<Resou
   const player = next.players.find((p) => p.id === playerId);
   if (!player) throw new Error('player not found');
   player.stockpile = { wood: 0, iron: 0, grain: 0, coal: 0, ...stock };
-  return next;
+  return withOffices(next);
 }
 
 function baseGame(): GameState {
@@ -35,7 +37,10 @@ function baseGame(): GameState {
     owners: { redhaven: 'red', bluehaven: 'blue' },
     armies: [],
     // Artillery needs a factory.
-    buildings: [{ provinceId: 'redhaven', type: 'factory' }],
+    buildings: [
+      { provinceId: 'redhaven', type: 'recruitment_office' },
+      { provinceId: 'redhaven', type: 'factory' },
+    ],
   });
   return withStockpile(game, 'red', { grain: 20000, iron: 10000, coal: 10000 });
 }
@@ -144,7 +149,10 @@ describe('training', () => {
       players,
       owners: { redhaven: 'red', bluehaven: 'blue' },
       armies: [{ id: 'garrison', owner: 'red', location: 'redhaven', units: { infantry: 5 } }],
-      buildings: [{ provinceId: 'redhaven', type: 'factory' }],
+      buildings: [
+      { provinceId: 'redhaven', type: 'recruitment_office' },
+      { provinceId: 'redhaven', type: 'factory' },
+    ],
     });
     const ordered = mustRecruit(withStockpile(game, 'red', { grain: 20000, iron: 10000, coal: 10000 }), 'red', 'redhaven', 'artillery', 2);
     const state = run(ordered, 4);
@@ -212,13 +220,15 @@ describe('training', () => {
 
 describe('economy to army loop', () => {
   it('turns produced resources into troops', () => {
-    const game = createGame({
-      map: tinyMap,
-      rules,
-      players,
-      owners: { redhaven: 'red', westmark: 'red', bluehaven: 'blue' },
-      armies: [],
-    });
+    const game = withOffices(
+      createGame({
+        map: tinyMap,
+        rules,
+        players,
+        owners: { redhaven: 'red', westmark: 'red', bluehaven: 'blue' },
+        armies: [],
+      }),
+    );
 
     // redhaven makes 3000 grain/tick, westmark 2000 iron/tick: 2 ticks give 6000 grain + 4000 iron.
     let state = run(game, 2);

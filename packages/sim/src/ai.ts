@@ -1,5 +1,13 @@
 import { previewBattle, sumUnits, totalCount } from './combat';
 import { areHostile, hasPendingProposal, orderPropose, orderRespond, proposalsFor, relationBetween } from './diplomacy';
+import {
+  buildingLevel,
+  buildingStep,
+  damageReduction,
+  missingBuildingRequirement,
+  missingUnitRequirement,
+  unitRequirements,
+} from './buildings';
 import { canRecruitAt } from './morale';
 import { canSpyOn, isSpyInPlace, orderSpy, orderSpyMission } from './espionage';
 import { orderMarketAccept, orderMarketOffer } from './market';
@@ -372,10 +380,8 @@ function recruitPhase(state: GameState, rules: Ruleset, playerId: PlayerId, opts
     if (!def || !player) continue;
     const domain = def.domain ?? 'land';
 
-    // Train where the required building stands, as close to the front as possible.
-    const required = def.requires;
-    const accept = (province: Province) =>
-      canRecruitAt(rules, province) && (required === undefined || province.buildings.includes(required));
+    // Train where the required buildings stand, as close to the front as possible.
+    const accept = (province: Province) => canRecruitAt(rules, province) && missingUnitRequirement(province, def) === null;
     let staging: ProvinceId | null = null;
     let limit = cap;
 
@@ -537,57 +543,120 @@ function commanderPlan(
 // Building
 // ---------------------------------------------------------------------------
 
+/**
+ * The unit types the AI trains on land (it knows infantry, artillery and commanders), and the ships it
+ * uses in a landing. New units of the ruleset (cavalry, tanks...) are left alone: the AI does not
+ * build the industry they need.
+ */
+function aiUnitTypes(rules: Ruleset, domain: 'land' | 'sea' | 'air'): UnitDef[] {
+  const entries = Object.entries(rules.units);
+  if (domain === 'land') {
+    return entries
+      .filter(([id, def]) => (def.domain ?? 'land') === 'land' && (id === 'infantry' || id === 'artillery' || def.commander))
+      .map(([, def]) => def);
+  }
+  if (domain === 'air') return entries.filter(([, def]) => def.domain === 'air').map(([, def]) => def);
+  const transport = entries.find(([, def]) => def.domain === 'sea' && (def.capacity ?? 0) > 0);
+  const warship = entries.find(([, def]) => def.domain === 'sea' && (def.capacity ?? 0) === 0 && def.attack > 0);
+  return [transport, warship].filter((e): e is [string, UnitDef] => e !== undefined).map(([, def]) => def);
+}
+
+/** The highest level needed of each building to train all of the given units. */
+function neededLevels(units: UnitDef[]): Map<BuildingId, number> {
+  const needed = new Map<BuildingId, number>();
+  for (const def of units) {
+    for (const [building, level] of unitRequirements(def)) needed.set(building, Math.max(needed.get(building) ?? 0, level));
+  }
+  return needed;
+}
+
+/** A building and every building it depends on, however deep. */
+function requirementClosure(rules: Ruleset, type: BuildingId, seen = new Set<BuildingId>()): Set<BuildingId> {
+  if (seen.has(type)) return seen;
+  seen.add(type);
+  const def = rules.buildings[type];
+  if (!def) return seen;
+  for (const step of [def, ...(def.upgrades ?? [])]) {
+    for (const needed of Object.keys(step.requires ?? {})) requirementClosure(rules, needed, seen);
+  }
+  return seen;
+}
+
+/**
+ * The building to order next in a province to bring `type` up to `level`: the building itself, or the
+ * first prerequisite it still lacks (office, then barracks, then workshop...). Null when it is done
+ * or cannot be reached.
+ */
+function nextBuildStep(rules: Ruleset, province: Province, type: BuildingId, level: number, depth = 0): BuildingId | null {
+  const have = buildingLevel(province, type);
+  const def = rules.buildings[type];
+  if (!def || have >= level || depth > 8) return null;
+  const step = buildingStep(def, have + 1);
+  if (!step) return null;
+  const missing = missingBuildingRequirement(province, step.requires);
+  return missing ? nextBuildStep(rules, province, missing[0], missing[1], depth + 1) : type;
+}
+
 function buildPhase(state: GameState, rules: Ruleset, playerId: PlayerId, opts: AiOptions): GameState {
   const owned = state.provinces.filter((p) => p.owner === playerId);
   const queued = state.constructionQueue.filter((j) => j.owner === playerId);
-  const hasOrBuilding = (type: BuildingId) =>
-    owned.some((p) => p.buildings.includes(type)) || queued.some((j) => j.buildingType === type);
+  // True when some province already has the building at that level, or an order will bring it there.
+  const reached = (type: BuildingId, level: number) =>
+    owned.some((p) => buildingLevel(p, type) >= level) ||
+    queued.some((j) => j.buildingType === type && (j.level ?? 1) >= level);
 
   const entries = Object.entries(rules.buildings);
-  // Buildings that only ships or aircraft need (ports, airfields) are ignored for now.
-  const required = new Set(
-    Object.values(rules.units)
-      .filter((u) => (u.domain ?? 'land') === 'land')
-      .map((u) => u.requires)
-      .filter((r): r is BuildingId => r !== undefined),
-  );
-  const requiredBy = (domain: 'sea' | 'air') =>
-    new Set(
-      Object.values(rules.units)
-        .filter((u) => u.domain === domain)
-        .map((u) => u.requires)
-        .filter((r): r is BuildingId => r !== undefined),
-    );
+  const landNeeds = neededLevels(aiUnitTypes(rules, 'land'));
   const boosters = entries.filter(([, def]) => (def.trainingTimeMultiplier ?? 1) < 1).map(([id]) => id);
-  const enablers = entries.filter(([id]) => required.has(id)).map(([id]) => id);
-  const seaEnablers = entries.filter(([id]) => requiredBy('sea').has(id));
-  const airEnablers = entries.filter(([id]) => requiredBy('air').has(id)).map(([id]) => id);
+  for (const id of boosters) landNeeds.set(id, Math.max(landNeeds.get(id) ?? 0, 1));
+  const airNeeds = neededLevels(aiUnitTypes(rules, 'air'));
+  const seaNeeds = neededLevels(aiUnitTypes(rules, 'sea'));
   const economy = entries.filter(([, def]) => (def.productionMultiplier ?? 1) > 1).map(([id]) => id);
 
   const front = stagingProvince(state, playerId);
-  const wanted: { type: BuildingId; province: ProvinceId | null }[] = [];
 
-  // One of each training booster and unit-enabling building, near the front.
-  for (const type of [...boosters, ...enablers]) {
-    if (!hasOrBuilding(type)) wanted.push({ type, province: front });
-  }
+  /**
+   * Where to raise `type` to `level`: the province that already has the most of its chain (so the chain
+   * is not scattered), preferring the one nearest the front. Not a province with enemies in it.
+   */
+  const siteFor = (type: BuildingId): Province | null => {
+    const chain = [...requirementClosure(rules, type)];
+    const progress = (p: Province) => chain.reduce((sum, id) => sum + buildingLevel(p, id), 0);
+    const candidates = owned.filter((p) => !hostileAt(state, playerId, p.id));
+    const best = Math.max(...candidates.map(progress), -1);
+    const top = candidates.filter((p) => progress(p) === best);
+    return top.find((p) => p.id === front) ?? top.sort((x, y) => x.id.localeCompare(y.id))[0] ?? null;
+  };
+
+  const wanted: { type: BuildingId; province: ProvinceId | null }[] = [];
+  const want = (needs: Map<BuildingId, number>, site?: (type: BuildingId) => Province | null) => {
+    for (const [type, level] of needs) {
+      if (reached(type, level)) continue;
+      const province = site ? site(type) : siteFor(type);
+      const step = province ? nextBuildStep(rules, province, type, level) : null;
+      if (province && step) wanted.push({ type: step, province: province.id });
+    }
+  };
+
+  // The training boosters and everything the units it trains need, along one chain near the front.
+  want(landNeeds);
 
   // An airfield once the country is big enough to afford aircraft.
-  if (opts.airForce && owned.length >= opts.minProvincesForAir) {
-    for (const type of airEnablers) {
-      if (!hasOrBuilding(type)) wanted.push({ type, province: front });
-    }
-  }
+  if (opts.airForce && owned.length >= opts.minProvincesForAir) want(airNeeds);
 
   // Nothing left to conquer on foot: a port comes first (ports need a coast).
   if (amphibiousMode(state, rules, playerId, opts)) {
-    for (const [type, def] of seaEnablers) {
-      if (hasOrBuilding(type)) continue;
-      wanted.unshift({ type, province: def.coastal ? portSite(state, playerId) : front });
-    }
+    const before = wanted.length;
+    want(seaNeeds, (type) => {
+      if (!rules.buildings[type]?.coastal) return siteFor(type);
+      const id = portSite(state, playerId);
+      return owned.find((p) => p.id === id) ?? null;
+    });
+    wanted.unshift(...wanted.splice(before));
   }
 
-  // Economy buildings in the most productive provinces, up to a limit.
+  // Economy buildings in the most productive provinces, up to a limit. Only where the building can
+  // be built right away: the AI does not build a whole chain just for the production bonus.
   for (const type of economy) {
     const count =
       owned.filter((p) => p.buildings.includes(type)).length + queued.filter((j) => j.buildingType === type).length;
@@ -597,7 +666,8 @@ function buildPhase(state: GameState, rules: Ruleset, playerId: PlayerId, opts: 
         (p) =>
           !p.buildings.includes(type) &&
           !queued.some((j) => j.provinceId === p.id && j.buildingType === type) &&
-          !hostileAt(state, playerId, p.id),
+          !hostileAt(state, playerId, p.id) &&
+          nextBuildStep(rules, p, type, 1) === type,
       )
       .sort((x, y) => y.production - x.production || x.id.localeCompare(y.id))[0];
     wanted.push({ type, province: best?.id ?? null });
@@ -640,7 +710,10 @@ function canHold(
   const defenders = state.armies.filter((a) => a.location === provinceId && areHostile(state, army.owner, a.owner));
   if (defenders.length === 0) return true;
 
-  const preview = previewBattle(rules, army.units, sumUnits(defenders.map((a) => a.units)));
+  // A fortress of the defender stops part of the damage: the preview takes it into account.
+  const target = state.provinces.find((p) => p.id === provinceId);
+  const shield = target && target.owner !== null && areHostile(state, army.owner, target.owner) ? 1 - damageReduction(rules, target) : 1;
+  const preview = previewBattle(rules, army.units, sumUnits(defenders.map((a) => a.units)), 1000, shield);
   return preview.winner === 'attacker' && preview.attackerHpLeft >= opts.minHpLeft;
 }
 

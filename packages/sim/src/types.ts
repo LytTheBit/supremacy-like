@@ -42,8 +42,21 @@ export interface UnitDef {
   cost: Record<ResourceId, number>;
   /** Ticks needed to train a batch (the whole batch trains in parallel). */
   trainingTicks: number;
-  /** Building that must exist in the province to train this unit. Omit for no requirement. */
-  requires?: BuildingId;
+  /**
+   * Buildings that must stand in the province to train this unit, with the minimum level of each
+   * (`{ factory: 2 }` = a factory of level 2 or more). Omit for no requirement.
+   */
+  requires?: Record<BuildingId, number>;
+  /**
+   * Land units only: the unit moves only along a railway, from a province with a railway of its
+   * owner (or an ally) to the next one (railway guns).
+   */
+  railOnly?: boolean;
+  /**
+   * The unit is hidden from enemies unless they have a unit or province within
+   * `rules.vision.stealthRadius` of it (submarines). Armies mixing it with other units are not hidden.
+   */
+  stealth?: boolean;
   /**
    * Makes this unit a commander. Commanders do not fight themselves: each one raises the
    * attack and defense of the other troops of its army by `bonus` (0.02 = +2%), and all
@@ -79,16 +92,49 @@ export interface UnitDef {
   capacity?: number;
 }
 
+/**
+ * What changes from one building level to the next. A building def describes level 1; each entry of
+ * `upgrades` describes the next level (index 0 = level 2). Cost, time and requirements are those of
+ * the step itself; an effect that is not stated stays as it was on the previous level.
+ */
+export interface BuildingUpgrade {
+  cost: Record<ResourceId, number>;
+  buildTicks: number;
+  /** Replaces the building's own `requires` for this step. */
+  requires?: Record<BuildingId, number>;
+  productionMultiplier?: number;
+  trainingTimeMultiplier?: number;
+  damageReduction?: number;
+}
+
 export interface BuildingDef {
   name: string;
-  /** Resources paid when the construction is ordered. */
+  /** Resources paid when the construction is ordered (level 1). */
   cost: Record<ResourceId, number>;
-  /** Ticks needed to build it. */
+  /** Ticks needed to build it (level 1). */
   buildTicks: number;
+  /**
+   * Other buildings that must already stand in the same province, with the minimum level of each,
+   * before this one can be started (`{ barracks: 1 }`).
+   */
+  requires?: Record<BuildingId, number>;
+  /** Levels 2 and up. Omit for a building with a single level. */
+  upgrades?: BuildingUpgrade[];
   /** Multiplies the production of the province it stands in. Default 1. */
   productionMultiplier?: number;
   /** Multiplies the training time of units trained in the province. Default 1. */
   trainingTimeMultiplier?: number;
+  /**
+   * Share of the damage that is stopped (0.5 = half) for the troops of the province's owner, and
+   * of its allies, when the province is attacked or shelled (fortresses). Default 0.
+   */
+  damageReduction?: number;
+  /**
+   * Armies of the owner (or of an allied owner) are this many times faster on the half of a road that
+   * lies in a province with this building (railways): fully between two of them, partly at the edge of
+   * the network. Also where `UnitDef.railOnly` units can go.
+   */
+  railSpeedFactor?: number;
   /** Can only be built in a land province that borders the sea. */
   coastal?: boolean;
   /** Ships can dock in a province that has this building (its owner's and allies' ships). */
@@ -138,6 +184,11 @@ export interface VisionRules {
   provinceRadius: number;
   /** How far an army sees when none of its units says otherwise (UnitDef.vision). */
   unitRadius: number;
+  /**
+   * Stealth units (`UnitDef.stealth`) are only seen by enemies with an army or a province within this
+   * travel distance. Default 1.
+   */
+  stealthRadius?: number;
 }
 
 export interface DiplomacyRules {
@@ -222,6 +273,8 @@ export interface Ruleset {
   economy?: EconomyRules;
   /** Chat limits. Omit for the defaults (see `chatRules()`). */
   chat?: ChatRules;
+  /** Buildings (level 1) that stand in every province a player starts with in a skirmish. */
+  startingBuildings?: BuildingId[];
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +297,12 @@ export interface Edge {
   a: ProvinceId;
   b: ProvinceId;
   distance: number;
+  /**
+   * Where the border between the two provinces lies on the road, as a share of `distance` counted from
+   * `a` (0.8 = the first 80% of the road is in `a`). Default 0.5. It decides which province's railway
+   * an army is using at each point of its march.
+   */
+  split?: number;
 }
 
 export interface MapDef {
@@ -266,6 +325,11 @@ export interface Province extends ProvinceDef {
   owner: PlayerId | null;
   /** Completed buildings (at most one of each type). They stay when the province is conquered. */
   buildings: BuildingId[];
+  /**
+   * Level of the buildings above level 1. A building that is not listed here is at level 1; read it
+   * with `buildingLevel()`. Never holds a building that is not in `buildings`.
+   */
+  buildingLevels?: Record<BuildingId, number>;
   /** 0..100. Low morale reduces production and blocks recruitment. */
   morale: number;
 }
@@ -304,6 +368,8 @@ export interface ConstructionJob {
   owner: PlayerId;
   provinceId: ProvinceId;
   buildingType: BuildingId;
+  /** The level this construction will bring the building to (1 = a new building). */
+  level?: number;
   ticksLeft: number;
 }
 
@@ -466,7 +532,7 @@ export type GameEvent =
       count: number;
     }
   | { tick: number; type: 'recruit_cancelled'; jobId: string; provinceId: ProvinceId }
-  | { tick: number; type: 'building_completed'; provinceId: ProvinceId; buildingType: BuildingId }
+  | { tick: number; type: 'building_completed'; provinceId: ProvinceId; buildingType: BuildingId; level?: number }
   | { tick: number; type: 'building_cancelled'; jobId: string; provinceId: ProvinceId; buildingType: BuildingId }
   | { tick: number; type: 'player_eliminated'; playerId: PlayerId }
   | { tick: number; type: 'game_over'; winner: PlayerId | null; winners: PlayerId[]; reason: VictoryReason }

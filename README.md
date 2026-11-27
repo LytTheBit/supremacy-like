@@ -145,26 +145,57 @@ on each side of a border get exactly the same curve, so there are no gaps. `stre
 `renderSvg(map, { organic: 0.6 })` and `genmap --organic 0.6` use it (0 draws plain hexes).
 
 Travel distance between provinces comes from the distance between their centers
-(`distancePerHex`), so large provinces take longer to cross.
+(`distancePerHex`), so large provinces take longer to cross. Each link also has a `split`: where the
+border between the two provinces lies on the road (a share of the distance, counted from `a`; computed
+from the shared hex edges, so a big province owns more of the road; default 0.5).
+
+An army on the road covers `speed x bonus` of it per tick, where the bonus is that of the province it is
+inside at that point of the road (before the border: the province it left; after it: the one it enters).
+The bonus is looked up again every tick, so a railway built or lost during a long march changes the rest
+of the march at once.
 
 ## Buildings
 
-Defined in the ruleset (`buildings`), so eras and medals can change them. Base ruleset:
+Defined in the ruleset (`buildings`), so eras and medals can change them. A building def describes
+level 1; `upgrades` lists the levels above it (cost, time, effects). Costs are in thousands and are
+placeholders to balance. Base ruleset:
 
-| Building | Cost | Build time | Effect |
-|---|---|---|---|
-| barracks | 4 wood, 2 iron | 3 ticks | training in the province takes half the time |
-| factory | 6 wood, 4 iron, 2 coal | 5 ticks | required to train artillery (`requires` on the unit) |
-| workshop | 5 wood, 1 coal | 4 ticks | +50% production of the province |
+| Building | Needs (same province) | Levels | Cost of level 1 | Effect |
+|---|---|---|---|---|
+| recruitment office | nothing | 1 | 2 wood, 0.5 grain, 2 ticks | infantry can be trained here |
+| barracks | office | 3 | 4 wood, 2 iron, 3 ticks | training time x0.5 / x0.4 / x0.33 |
+| workshop | barracks | 3 | 5 wood, 1 coal, 4 ticks | production +50% / +60% / +70%; unlocks cavalry and armored cars (1), balloons (2) |
+| factory | workshop 2 (levels 3-4: workshop 3) | 4 | 6 wood, 4 iron, 2 coal, 5 ticks | production +10% .. +25%; unlocks artillery (1), tanks (2), railway guns (3, with a railway), heavy tanks (4) |
+| fortress | barracks | 5 | 3 wood, 3 iron, 4 ticks | stops 50% / 60% / 70% / 80% / 90% of the damage to the troops of the owner (and allies) in the province |
+| railway | nothing | 1 | 5 wood, 2 iron, 3 ticks | production +10%; troops of the owner (and allies) are 2x faster while they are inside the province, wherever on the map; railway guns only move between two railways |
+| port | coast | 1 | 6 wood, 3 iron, 4 ticks | ships are trained and dock here; submarines also need a factory 2 |
+| airfield | nothing | 1 | 5 wood, 3 iron, 4 ticks | aircraft are trained and land here |
 
-- `orderBuild` pays the full cost immediately; one building of each type per province.
-- A construction lost to conquest before completion is not refunded. Completed buildings stay
-  in the province and pass to the conqueror.
+- `orderBuild` pays the full cost of the step at once. Ordering a building that already stands in the
+  province upgrades it by one level (`already_built` at the top level); one construction per
+  building type per province. The buildings it depends on must stand there at the needed level
+  (`missing_prerequisite`).
+- `Province.buildings` lists the buildings; `Province.buildingLevels` holds the levels above 1. Read
+  them with `buildingLevel()`, `levelEffect()` and the other helpers of `buildings.ts`.
+- A construction lost to conquest before completion is not refunded. Completed buildings (with their
+  levels) stay in the province and pass to the conqueror. Sabotage takes away one level at a time.
 - Effects multiply (`productionMultiplier`, `trainingTimeMultiplier`); training never takes less than 1 tick.
-- Starting buildings go in `createGame({ buildings })`.
+- Units say what they need in `UnitDef.requires`: `{ factory: 2 }` means a factory of level 2 or more.
+- Starting buildings go in `createGame({ buildings })`; `rules.startingBuildings` (a recruitment
+  office) stands in every province a player starts with in a skirmish.
 - The AI finds building types from the ruleset data, not by name: training boosters first, then
-  the buildings units require, then economy buildings in its most productive provinces (limit
-  `maxEconomyBuildings`). One construction per turn.
+  the buildings its units require (it walks up the whole chain in one province, one building per turn),
+  then economy buildings that can be built right away, in its most productive provinces (limit
+  `maxEconomyBuildings`). It trains only infantry, artillery and commanders on land, so it never
+  builds the industry of the other units.
+
+## Units
+
+Costs, times, stats and requirements are in `rules.units`. New in this version: cavalry, armored car,
+tank, heavy tank, railway gun, observation balloon and submarine. Special flags on `UnitDef`:
+
+- `railOnly`: moves only between provinces that both have a railway of its owner (or an ally).
+- `stealth`: enemies see it only from within `rules.vision.stealthRadius` (submarines); a mixed army is not hidden.
 
 ## Morale
 
@@ -359,13 +390,15 @@ With several enemies the damage is split evenly. All units of a side lose the sa
 - Victory: a player is eliminated with no provinces, armies or batches in training. The last
   survivor wins, or whoever owns 60% of all provinces (domination), or a group of allies that together own it (coalition). A finished game is frozen
   and rejects orders.
-- AI: obeys the fog of war, does not defend, and recruits only infantry and artillery.
+- AI: obeys the fog of war, does not defend, and recruits only infantry and artillery (it still fights
+  armies made of any unit).
   Two identical AIs from a symmetric start deadlock, which is expected.
 - Balance: wood is not used by any unit yet (it will be needed by buildings), and iron is the
   bottleneck of the current economy.
 - Hex maps: one resource per province (chosen by regional noise, so neighbors tend to share it);
   rivers, mountains and terrain types are not generated yet; sea routes are a single link, not a path.
-- No terrain or fog of war yet. Buildings cannot be damaged, upgraded or demolished.
+- Buildings cannot be damaged by bombing or demolished (sabotage lowers a level). Fortresses do not hide
+  the composition of the troops; railway guns have no range beyond their province.
 - The client plays one human against one AI (so the diplomacy panel has one row for now), and a game lives in the browser tab (no saving).
 - The AI trains commanders only once it has an army, and does not use morale to choose targets.
 

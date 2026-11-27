@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { baseRuleset, createGame, orderMove, orderRecruit, tick, tinyMap, type GameState } from '../src';
 
+import { withOffices } from './helpers';
+
 const rules = baseRuleset;
 
 const players = [
@@ -9,7 +11,7 @@ const players = [
 ];
 
 function game(owners: Record<string, string>, armies: Parameters<typeof createGame>[0]['armies'] = []): GameState {
-  return createGame({ map: tinyMap, rules, players, owners, armies });
+  return withOffices(createGame({ map: tinyMap, rules, players, owners, armies }));
 }
 
 describe('victory by domination', () => {
